@@ -39,7 +39,9 @@ slot and in the negative box too (it's ADetailer's `[PROMPT]` placeholder under 
 friendlier name).
 
 There's an **Apply these settings to all images** button for when one config suits
-the whole batch.
+the whole batch. It copies the unit choice, confidence, denoising strength and
+mask max ratio onto every image — but **not the prompts**, since those are the
+part that's meant to differ per image. Every image keeps its own.
 
 ## Features
 

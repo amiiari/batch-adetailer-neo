@@ -974,13 +974,38 @@ def _on_preset_change(store, paths, sel, preset, slot, num_slots):
 
 
 def _on_apply_to_all(store, paths, sel, *control_values):
-    """Copy the currently-shown config onto every loaded image."""
+    """
+    Copy the currently-shown config onto every loaded image — except the prompts.
+    Those are the per-image part (that's the whole point of the tab), so each image
+    keeps its own; everything else (unit choice, confidence, denoise, max ratio)
+    is overwritten.
+    """
     if not paths:
         return store, "No images loaded."
-    config = list(control_values)
-    store = {path: list(config) for path in paths}
+
+    source = list(control_values)
+    num_slots = len(source) // CONTROLS_PER_SLOT
+    store = dict(store or {})
+    sel_path = paths[int(sel)] if sel is not None and 0 <= int(sel) < len(paths) else None
+
+    for path in paths:
+        config = list(source)
+        # The selected image's prompts are the live control values themselves, so
+        # only the *other* images have prompts of their own to preserve.
+        if path != sel_path:
+            existing = list(store.get(path) or source)
+            for i in range(num_slots):
+                prompt_at = i * CONTROLS_PER_SLOT + 1  # [preset, prompt, negative, ...]
+                if prompt_at + 1 < len(existing):
+                    config[prompt_at] = existing[prompt_at]
+                    config[prompt_at + 1] = existing[prompt_at + 1]
+        store[path] = config
+
     src = os.path.basename(paths[int(sel)]) if sel is not None and 0 <= int(sel) < len(paths) else "current"
-    return store, f"Applied `{src}` settings to all {len(paths)} images."
+    return store, (
+        f"Applied `{src}` settings to all {len(paths)} images "
+        f"(each image kept its own prompts)."
+    )
 
 # ──────────────────────────────────────────────
 # Gradio UI Tab
@@ -1105,7 +1130,9 @@ def _build_ui_tab():
                 presets = [slot[0] for slot in slot_controls]
                 overrides = [c for slot in slot_controls for c in slot[1:]]
 
-                apply_all_btn = gr.Button("📋 Apply these settings to all images")
+                apply_all_btn = gr.Button(
+                    "📋 Apply these settings to all images (keeps each image's prompts)"
+                )
 
                 with gr.Row():
                     use_original_name = gr.Checkbox(

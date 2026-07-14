@@ -1,5 +1,16 @@
 # Change Log
 
+## 2026-07-14 — Apply-to-all no longer touches prompts (v0.3.1)
+
+"Apply these settings to all images" used to overwrite every image's whole config, prompts
+included — which wiped exactly the thing the tab exists to keep per-image. It now copies
+only the non-prompt values (unit choice, confidence, denoising strength, mask max ratio);
+each image keeps its own positive and negative prompt, in every slot.
+
+The selected image is the exception, in that its prompts come from the live control values
+rather than the store — those *are* its prompts, and the store copy may not have caught up
+with a `.change` yet.
+
 ## 2026-07-14 — Layout (v0.3)
 
 Three things from using it on real batches:
