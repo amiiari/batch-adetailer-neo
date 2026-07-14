@@ -2,9 +2,7 @@
 
 A batch-processing ADetailer extension for [Stable Diffusion WebUI Forge — Neo](https://github.com/Haoming02/sd-webui-forge-classic/tree/neo).
 
-Drop in any number of images, give **each image its own ADetailer settings**, and
-run the whole lot in one go — no regeneration, no clicking through img2img once
-per image.
+oooo this is really helpful for me! but you can drag in your images, and configure each image to have it's own adetailer settings / prompt all in one go! thank you claude
 
 ![Forge Neo](https://img.shields.io/badge/Forge-Neo-blue) ![License](https://img.shields.io/badge/license-MIT-green)
 
