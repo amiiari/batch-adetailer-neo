@@ -1,0 +1,104 @@
+# Batch ADetailer for Forge Neo
+
+A batch-processing ADetailer extension for [Stable Diffusion WebUI Forge — Neo](https://github.com/Haoming02/sd-webui-forge-classic/tree/neo).
+
+Drop in any number of images, give **each image its own ADetailer settings**, and
+run the whole lot in one go — no regeneration, no clicking through img2img once
+per image.
+
+![Forge Neo](https://img.shields.io/badge/Forge-Neo-blue) ![License](https://img.shields.io/badge/license-MIT-green)
+
+## Requirements
+
+The [ADetailer](https://github.com/Bing-su/adetailer) extension must be installed
+and enabled (built against the `aadetailer-neoforge` fork). This extension drives
+ADetailer's own pipeline — it does not reimplement detection or inpainting.
+
+## How it works
+
+Drop your images. Click a thumbnail on the right, and that image's **slots** load
+on the left. Each slot picks one of your ADetailer units — which brings along that
+unit's detection model **and every setting you saved for it** in the img2img
+ADetailer panel (mask blur, dilate/erode, padding, steps, CFG, sampler, ...). You
+only override the handful of things that actually vary per image:
+
+- **ADetailer prompt / negative prompt** (empty = reuse that image's own prompt
+  from its metadata)
+- **Detection confidence**
+- **Inpaint denoising strength**
+- **Mask max area ratio**
+
+**Slot order is execution order.** So on an image where a hand overlaps a face,
+put the hand unit in Slot 1 and the face unit in Slot 2, and the face pass runs
+last — over the top of the hand — for maximum retention. Any image where you don't
+care just keeps the defaults.
+
+**Right-click a thumbnail** to clear Slot 1's ADetailer prompt for that image —
+the quick way to say "just use this image's own prompt for the face pass".
+
+There's an **Apply these settings to all images** button for when one config suits
+the whole batch.
+
+## Features
+
+- **Per-image settings** — every dropped image remembers its own slots, prompts,
+  and sliders
+- **Inherits your ADetailer defaults** — models and all the fiddly settings come
+  from what you configured in the img2img ADetailer panel (Settings → Defaults),
+  so the batch tab stays uncluttered and always matches your setup
+- **Reorderable units** — per image, choose which unit runs first
+- **No base-image regeneration** — uses ADetailer's "skip img2img" path, so the
+  base pass is a throwaway 1-step 128×128 render and only the detected regions are
+  actually inpainted, at full resolution
+- **Per-image prompt inheritance** — an empty ADetailer prompt falls back to the
+  image's own prompt, read from its embedded generation info
+- **LoRA name repair** — an old image's prompt often names a LoRA that has since
+  been renamed (a training epoch like `mylora-000021` that's now just `mylora`).
+  Forge can't resolve it and quietly renders without the LoRA; this re-points the
+  name at the real file, and says so in the log when it can't
+- **Keep your filenames** — results save as `<original name><suffix>.png`
+  (e.g. `mypic-adetailer.png`) flat in the output folder (optional, on by default)
+- **Full lightbox preview** — click a result for the full-size viewer with
+  ←/→ arrow-key navigation
+- **Live progress** — results stream into the gallery as each image finishes; the
+  Cancel button aborts the image being worked on and stops the batch
+- **Readable errors** — failures show the full traceback in the status log and
+  skip to the next image (configurable)
+
+## Installation
+
+1. Clone this repository into your Forge Neo `extensions` folder:
+   ```
+   cd <your Forge Neo folder>/extensions
+   git clone https://github.com/amiiari/batch-adetailer-neo
+   ```
+2. Restart Forge Neo (or Reload UI).
+3. A new **Batch ADetailer** tab appears.
+
+No extra dependencies are required.
+
+## Usage
+
+1. Set your ADetailer units up once, the way you like them, on the **img2img**
+   tab, and save them as defaults (Settings → Defaults, or the `ui-config.json`
+   mechanism). Unit 1 = faces, Unit 2 = hands, etc.
+2. Open the **Batch ADetailer** tab and drop your images in.
+3. Click a thumbnail; tune that image's slots on the left. Repeat for any image
+   that needs different treatment.
+4. Click **🚀 Run Batch ADetailer**.
+
+> **Note:** the number of slots is capped by **Settings → ADetailer → Max models**.
+
+## Settings
+
+Under **Settings → Batch ADetailer**:
+
+- **Output Directory** — custom save location (empty = default img2img output dir)
+- **Max Images per Batch** — safety limit (default 50)
+- **Skip Failed Images and Continue** — keep going when one image fails (default on)
+- **Repair Unresolvable LoRA Names in Prompts** — re-point a renamed/epoch LoRA
+  name at the matching file in your Lora folder (default on)
+
+## License
+
+MIT
