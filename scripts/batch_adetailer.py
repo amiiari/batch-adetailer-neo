@@ -691,11 +691,11 @@ def batch_adetailer_process(store, paths, sel, use_original_name, filename_suffi
     num_slots = _get_num_slots()
 
     if not paths:
-        yield [], "No images to process. Please drag and drop some images first."
+        yield "No images to process. Please drag and drop some images first."
         return
 
     if _find_adetailer_script() is None:
-        yield [], (
+        yield (
             "❌ ADetailer not found on the img2img tab.\n\n"
             "This extension drives the ADetailer extension (aadetailer-neoforge) — "
             "install/enable it and reload the UI."
@@ -706,7 +706,7 @@ def batch_adetailer_process(store, paths, sel, use_original_name, filename_suffi
     skip_errors = shared.opts.batch_adetailer_skip_errors
 
     if len(paths) > max_images:
-        yield [], f"Too many images ({len(paths)}). Max is {max_images}."
+        yield f"Too many images ({len(paths)}). Max is {max_images}."
         return
 
     # Snapshot the store: the running generator holds the gr.State by reference,
@@ -717,7 +717,7 @@ def batch_adetailer_process(store, paths, sel, use_original_name, filename_suffi
 
     defaults = _get_adetailer_defaults()
     if not defaults:
-        yield [], (
+        yield (
             "❌ Could not read your ADetailer unit defaults from the img2img panel.\n\n"
             "Open the img2img tab once, then come back and try again."
         )
@@ -815,16 +815,14 @@ def batch_adetailer_process(store, paths, sel, use_original_name, filename_suffi
         models = ", ".join(str(u.get("ad_model")) for u in unit_dicts)
         status_messages.append(f"✅ [{idx + 1}/{total}] Done: {name}  ({models})")
 
-        # Stream partial results into the gallery as each image finishes.
-        yield all_results, f"Processing... {idx + 1}/{total} done.\n\n" + "\n".join(status_messages)
+        # Stream progress into the log as each image finishes.
+        yield f"Processing... {idx + 1}/{total} done.\n\n" + "\n".join(status_messages)
 
-    status_text = (
+    yield (
         f"Batch complete — {len(all_results)} succeeded, "
         f"{failed_count} failed/skipped out of {total}.\n\n"
         + "\n".join(status_messages)
     )
-
-    yield all_results, status_text
 
 # ──────────────────────────────────────────────
 # UI event handlers
@@ -1054,6 +1052,24 @@ def _build_ui_tab():
             "around it is appended.*"
         )
 
+        gr.HTML(
+            """
+            <style>
+            /* Drag the gallery's bottom-right corner to see more than one row of
+               thumbnails. Gradio has no resizable gallery, but the block is just a
+               div — `resize` + `overflow` is all it takes. */
+            #batch_adetailer_source {
+                height: 340px;
+                min-height: 140px;
+                resize: vertical;
+                overflow: auto;
+            }
+            /* The drop zone's file list grows with every image dropped. */
+            #batch_adetailer_files { max-height: 220px; overflow-y: auto; }
+            </style>
+            """
+        )
+
         paths_state = gr.State([])
         store_state = gr.State({})
         sel_state = gr.State(None)
@@ -1064,16 +1080,19 @@ def _build_ui_tab():
         rclick_index = gr.Textbox(visible=False, elem_id="batch_adetailer_rclick")
         rclick_btn = gr.Button(visible=False, elem_id="batch_adetailer_rclick_btn")
 
+        # The drop zone spans the full width at the top: parked in the left column it
+        # grows with the file list and pushes the unit controls off the screen.
+        file_input = gr.File(
+            label="Drop images here (or click to browse)",
+            elem_id="batch_adetailer_files",
+            file_count="multiple",
+            file_types=["image"],
+            type="filepath",
+        )
+
         with gr.Row():
             # ── Left column: per-image unit editor ──
             with gr.Column(scale=1):
-                file_input = gr.File(
-                    label="Drop images here (or click to browse)",
-                    file_count="multiple",
-                    file_types=["image"],
-                    type="filepath",
-                )
-
                 editing_md = gr.Markdown(_editing_label([], None))
 
                 slot_controls: list = []
@@ -1107,8 +1126,12 @@ def _build_ui_tab():
                     )
                     cancel_btn = gr.Button("⏹️ Cancel", variant="stop", size="lg", scale=1)
 
-            # ── Right column: the images, then the results ──
+            # ── Right column: the images ──
             with gr.Column(scale=2):
+                # No `height`: the CSS below gives the block a starting height and a
+                # drag handle, and the thumbnails scroll inside it. A gradio `height`
+                # would pin the inner grid and fight the resize.
+                #
                 # allow_preview=False keeps a click on a thumbnail a *selection*
                 # instead of popping open the full-size viewer.
                 source_gallery = gr.Gallery(
@@ -1118,22 +1141,9 @@ def _build_ui_tab():
                     # on the source thumbnails.
                     elem_id="batch_adetailer_source",
                     columns=[4],
-                    height=260,
                     allow_preview=False,
                     show_download_button=False,
                     interactive=False,
-                )
-
-                # elem_id must end in "_gallery" so Forge's lightbox modal
-                # (javascript/imageviewer.js + ui.js all_gallery_buttons) picks
-                # it up — that's what enables ←/→ arrow-key navigation in the
-                # full-size preview.
-                output_gallery = gr.Gallery(
-                    label="Results",
-                    elem_id="batch_adetailer_gallery",
-                    columns=[4],
-                    height="auto",
-                    preview=True,
                 )
 
                 status_text = gr.TextArea(
@@ -1222,7 +1232,7 @@ def _build_ui_tab():
                 use_original_name, filename_suffix,
                 *controls,
             ],
-            outputs=[output_gallery, status_text],
+            outputs=[status_text],
         )
 
     return block

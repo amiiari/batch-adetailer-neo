@@ -1,5 +1,21 @@
 # Change Log
 
+## 2026-07-14 — Layout (v0.3)
+
+Three things from using it on real batches:
+
+- **Drop zone moved to the top**, full width. Parked in the left column it grew with the
+  file list, pushing the unit controls out of reach on a big batch. Its list is now capped
+  at 220px with its own scrollbar.
+- **The thumbnail gallery is resizable** — drag the bottom-right corner. Gradio has no
+  resizable gallery, but the block is just a div: a `<style>` block gives
+  `#batch_adetailer_source` a starting height plus `resize: vertical; overflow: auto`.
+  The gradio `height` prop was *removed* — it pins the inner grid and fights the resize.
+- **Results gallery removed** (results are saved to disk anyway). `batch_adetailer_process`
+  now yields a status string instead of `(images, status)`, and `process_btn.click` outputs
+  only the log. The Status/Log stays: it carries per-image progress, tracebacks, and the
+  LoRA-repair notes.
+
 ## 2026-07-13 — `[base prompt]` token (v0.2.4)
 
 Right-click now *inserts* `[base prompt]` into Slot 1's prompt instead of emptying the box.

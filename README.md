@@ -60,10 +60,10 @@ the whole batch.
   name at the real file, and says so in the log when it can't
 - **Keep your filenames** — results save as `<original name><suffix>.png`
   (e.g. `mypic-adetailer.png`) flat in the output folder (optional, on by default)
-- **Full lightbox preview** — click a result for the full-size viewer with
-  ←/→ arrow-key navigation
-- **Live progress** — results stream into the gallery as each image finishes; the
-  Cancel button aborts the image being worked on and stops the batch
+- **Roomy layout** — the drop zone spans the top, and the thumbnail gallery has a
+  drag handle in its bottom-right corner for when four at a time isn't enough
+- **Live progress** — the log fills in as each image finishes; the Cancel button
+  aborts the image being worked on and stops the batch
 - **Readable errors** — failures show the full traceback in the status log and
   skip to the next image (configurable)
 
