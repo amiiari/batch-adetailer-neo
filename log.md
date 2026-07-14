@@ -1,5 +1,12 @@
 # Change Log
 
+## 2026-07-14 — Gallery resize actually resizes (v0.3.2)
+
+Dragging the gallery taller stopped working past a point: the *block* grew, but gradio caps
+the thumbnail grid's own height, so the extra space was empty and the block's scrollbar took
+over. The block is now a flex column with the grid as the flexing child (`max-height: none`),
+so the grid follows the dragged height and is the only thing that scrolls.
+
 ## 2026-07-14 — Apply-to-all no longer touches prompts (v0.3.1)
 
 "Apply these settings to all images" used to overwrite every image's whole config, prompts

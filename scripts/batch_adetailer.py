@@ -1082,12 +1082,27 @@ def _build_ui_tab():
             <style>
             /* Drag the gallery's bottom-right corner to see more than one row of
                thumbnails. Gradio has no resizable gallery, but the block is just a
-               div — `resize` + `overflow` is all it takes. */
+               div — `resize` is all it takes.
+               The block is a flex column so the thumbnail grid *follows* the dragged
+               height instead of stopping at its own max-height and leaving the block
+               to scroll: the grid is the only thing that scrolls, and it fills
+               whatever height the drag gives it. */
             #batch_adetailer_source {
                 height: 340px;
                 min-height: 140px;
                 resize: vertical;
-                overflow: auto;
+                overflow: hidden;
+                display: flex;
+                flex-direction: column;
+            }
+            #batch_adetailer_source .grid-wrap,
+            #batch_adetailer_source .grid-container,
+            #batch_adetailer_source .gallery-container {
+                flex: 1 1 auto;
+                height: auto !important;
+                max-height: none !important;
+                min-height: 0 !important;
+                overflow-y: auto;
             }
             /* The drop zone's file list grows with every image dropped. */
             #batch_adetailer_files { max-height: 220px; overflow-y: auto; }
