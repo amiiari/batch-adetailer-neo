@@ -1,5 +1,14 @@
 # Change Log
 
+## 2026-07-14 — Run one image (v0.3.3)
+
+**▶️ Run this image** next to Run Batch: re-runs only the selected thumbnail, for when a
+batch is fine except for an image or two. `batch_adetailer_run_selected()` is a thin
+generator that delegates to `batch_adetailer_process()` with `paths=[selected]` and `sel=0`,
+so config lookup, saving, cancelling and the status log all behave identically — no second
+code path to keep in sync. Re-runs don't overwrite the earlier result: `_save_with_original_name`
+already adds a `-1`, `-2`, ... counter on collision. With nothing selected it just says so.
+
 ## 2026-07-14 — Gallery resize actually resizes (v0.3.2)
 
 Dragging the gallery taller stopped working past a point: the *block* grew, but gradio caps

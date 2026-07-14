@@ -38,6 +38,11 @@ prompt, e.g. `[base prompt], detailed eyes, looking at viewer`. It works in any
 slot and in the negative box too (it's ADetailer's `[PROMPT]` placeholder under a
 friendlier name).
 
+**▶️ Run this image** (next to Run Batch) re-runs only the thumbnail you have
+selected — for when a batch came out fine except for one or two. It saves
+alongside the earlier result rather than overwriting it (`mypic-adetailer-1.png`),
+so you can pick the one you prefer.
+
 There's an **Apply these settings to all images** button for when one config suits
 the whole batch. It copies the unit choice, confidence, denoising strength and
 mask max ratio onto every image — but **not the prompts**, since those are the

@@ -675,6 +675,23 @@ def _process_single_image(img: Image.Image, geninfo: str | None, unit_dicts: lis
         return [], [], tb, notes
 
 
+def batch_adetailer_run_selected(store, paths, sel, use_original_name, filename_suffix, *control_values):
+    """
+    Re-run just the selected image — for when a batch came out fine except for one
+    or two. It's the batch loop over a single path, so the config, saving and
+    cancelling all behave identically. The result doesn't overwrite the earlier
+    one: _save_with_original_name adds a -1, -2, ... counter on collision.
+    """
+    paths = list(paths or [])
+    if sel is None or not (0 <= int(sel) < len(paths)):
+        yield "Click a thumbnail first — this button runs the image you have selected."
+        return
+
+    yield from batch_adetailer_process(
+        store, [paths[int(sel)]], 0, use_original_name, filename_suffix, *control_values
+    )
+
+
 def batch_adetailer_process(store, paths, sel, use_original_name, filename_suffix, *control_values):
     """
     Main batch processing function. Each image is processed with its own config
@@ -1166,6 +1183,9 @@ def _build_ui_tab():
                     process_btn = gr.Button(
                         "🚀 Run Batch ADetailer", variant="primary", size="lg", scale=3
                     )
+                    run_one_btn = gr.Button(
+                        "▶️ Run this image", variant="secondary", size="lg", scale=2
+                    )
                     cancel_btn = gr.Button("⏹️ Cancel", variant="stop", size="lg", scale=1)
 
             # ── Right column: the images ──
@@ -1267,13 +1287,21 @@ def _build_ui_tab():
             queue=False,
         )
 
+        run_inputs = [
+            store_state, paths_state, sel_state,
+            use_original_name, filename_suffix,
+            *controls,
+        ]
+
         process_btn.click(
             fn=batch_adetailer_process,
-            inputs=[
-                store_state, paths_state, sel_state,
-                use_original_name, filename_suffix,
-                *controls,
-            ],
+            inputs=run_inputs,
+            outputs=[status_text],
+        )
+
+        run_one_btn.click(
+            fn=batch_adetailer_run_selected,
+            inputs=run_inputs,
             outputs=[status_text],
         )
 
