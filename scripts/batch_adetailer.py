@@ -49,6 +49,12 @@ CONTROLS_PER_SLOT = 1 + len(OVERRIDE_ATTRS)
 
 PRESET_DISABLED = -1
 
+# What right-click drops into a slot's prompt box. ADetailer's own placeholder for
+# "the image's prompt" is [PROMPT] (adetailer/scripts/!adetailer.py :: _get_prompt);
+# this is a friendlier spelling of it, translated back before the unit is handed over.
+BASE_PROMPT_TOKEN = "[base prompt]"
+_BASE_PROMPT_RE = re.compile(r"\[\s*base\s*prompt\s*\]", re.IGNORECASE)
+
 DEFAULT_NUM_SLOTS = 4
 
 # Safety net if ADetailer's pydantic model can't be reached to enumerate fields.
@@ -579,7 +585,10 @@ def _process_single_image(img: Image.Image, geninfo: str | None, unit_dicts: lis
         unit_dicts = [dict(u) for u in unit_dicts]
         for unit in unit_dicts:
             for key in ("ad_prompt", "ad_negative_prompt"):
-                unit[key], found = _fix_lora_names(unit.get(key, ""))
+                # "[base prompt]" -> ADetailer's own [PROMPT] placeholder, which it
+                # substitutes with the image's prompt (p.all_prompts) at inpaint time.
+                text = _BASE_PROMPT_RE.sub("[PROMPT]", unit.get(key, "") or "")
+                unit[key], found = _fix_lora_names(text)
                 notes += found
 
         script_args, _warning = _assemble_script_args(unit_dicts)
@@ -908,8 +917,9 @@ def _on_right_click(store, paths, index, num_slots):
     """
     Thumbnail right-clicked (via javascript/batch_adetailer.js, which puts the
     index in a hidden textbox and clicks a hidden button): select that image and
-    clear Slot 1's ADetailer prompt, so that slot falls back to the image's own
-    prompt. Everything else about the slot is left as it is.
+    put "[base prompt]" in Slot 1's ADetailer prompt. Left alone it behaves like
+    an empty box (the image's own prompt); anything typed around it is appended to
+    that prompt. Everything else about the slot is left as it is.
     """
     paths = list(paths or [])
     try:
@@ -925,7 +935,7 @@ def _on_right_click(store, paths, index, num_slots):
     config = list(
         store.get(paths[idx]) or _default_config(_get_adetailer_defaults(), num_slots)
     )
-    config[1] = ""  # slot 1's prompt — position 0 is its preset dropdown
+    config[1] = BASE_PROMPT_TOKEN  # slot 1's prompt — position 0 is its preset dropdown
     store[paths[idx]] = config
 
     return [idx, _editing_label(paths, idx), *_control_updates(config, num_slots), store]
@@ -997,13 +1007,16 @@ def _slot_controls(slot_index, num_slots):
     # lines = rows shown at rest; the box grows with the text up to max_lines.
     prompt = gr.Textbox(
         label="ADetailer prompt",
-        placeholder="Empty = reuse this image's own prompt from its metadata",
+        placeholder=(
+            "Empty = reuse this image's own prompt from its metadata. "
+            "Or write [base prompt] to build on it: '[base prompt], detailed eyes'"
+        ),
         lines=5,
         max_lines=20,
     )
     negative_prompt = gr.Textbox(
         label="ADetailer negative prompt",
-        placeholder="Empty = reuse this image's own negative prompt",
+        placeholder="Empty = reuse this image's own negative prompt ([base prompt] works here too)",
         lines=5,
         max_lines=20,
     )
@@ -1036,8 +1049,9 @@ def _build_ui_tab():
             "Each slot pulls its model and settings from one of your ADetailer units "
             "(as saved in the img2img panel) — you only override what varies per image. "
             "Slot order is the order the units run in.\n\n"
-            "*Right-click a thumbnail to clear Slot 1's prompt, so that pass inherits the "
-            "image's own prompt.*"
+            "*Right-click a thumbnail to drop `[base prompt]` into Slot 1's prompt — it stands "
+            "for that image's own prompt, so leaving it alone inherits, and anything you add "
+            "around it is appended.*"
         )
 
         paths_state = gr.State([])
@@ -1098,7 +1112,7 @@ def _build_ui_tab():
                 # allow_preview=False keeps a click on a thumbnail a *selection*
                 # instead of popping open the full-size viewer.
                 source_gallery = gr.Gallery(
-                    label="Images — click to edit its units, right-click to clear Slot 1's prompt",
+                    label="Images — click to edit its units, right-click for Slot 1's [base prompt]",
                     # Deliberately NOT suffixed "_gallery": that suffix is what makes
                     # Forge's imageviewer.js attach its lightbox, which we don't want
                     # on the source thumbnails.

@@ -21,7 +21,7 @@ ADetailer panel (mask blur, dilate/erode, padding, steps, CFG, sampler, ...). Yo
 only override the handful of things that actually vary per image:
 
 - **ADetailer prompt / negative prompt** (empty = reuse that image's own prompt
-  from its metadata)
+  from its metadata; `[base prompt]` = that same prompt, but with room to add to it)
 - **Detection confidence**
 - **Inpaint denoising strength**
 - **Mask max area ratio**
@@ -31,8 +31,12 @@ put the hand unit in Slot 1 and the face unit in Slot 2, and the face pass runs
 last — over the top of the hand — for maximum retention. Any image where you don't
 care just keeps the defaults.
 
-**Right-click a thumbnail** to clear Slot 1's ADetailer prompt for that image —
-the quick way to say "just use this image's own prompt for the face pass".
+**Right-click a thumbnail** to drop `[base prompt]` into Slot 1's prompt for that
+image. It stands for that image's own prompt, so leaving it alone inherits exactly
+as an empty box would — and anything you write around it is *added* to that
+prompt, e.g. `[base prompt], detailed eyes, looking at viewer`. It works in any
+slot and in the negative box too (it's ADetailer's `[PROMPT]` placeholder under a
+friendlier name).
 
 There's an **Apply these settings to all images** button for when one config suits
 the whole batch.

@@ -1,6 +1,6 @@
 // Right-click a thumbnail in the Batch ADetailer source gallery -> select that
-// image and clear Slot 1's ADetailer prompt (blank = inherit the image's own
-// prompt from its metadata).
+// image and put "[base prompt]" in Slot 1's ADetailer prompt (a placeholder for
+// the image's own prompt, so it can be built on rather than only inherited).
 //
 // Gradio has no contextmenu event, so this is the usual Forge dance: stash the
 // clicked index in a hidden textbox, dispatch `input` so gradio's frontend picks

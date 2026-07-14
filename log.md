@@ -1,9 +1,22 @@
 # Change Log
 
+## 2026-07-13 — `[base prompt]` token (v0.2.4)
+
+Right-click now *inserts* `[base prompt]` into Slot 1's prompt instead of emptying the box.
+Left alone it behaves exactly like an empty box (inherit the image's prompt); typed around,
+it appends — `[base prompt], detailed eyes`. Emptying the box gives you no way to *add* to
+the inherited prompt, which was the limitation.
+
+- `BASE_PROMPT_TOKEN` / `_BASE_PROMPT_RE` — the token is rewritten to ADetailer's own
+  `[PROMPT]` placeholder (`!adetailer.py :: _get_prompt`, which substitutes `p.all_prompts`)
+  on the way into the unit dict, so nothing new has to resolve it. Case- and
+  spacing-tolerant, works in every slot and in the negative box.
+
 ## 2026-07-13 — Right-click to clear Slot 1's prompt (v0.2.3)
 
 Right-clicking a thumbnail selects that image and blanks Slot 1's ADetailer prompt
 (blank = inherit the image's own prompt). Nothing else in the slot changes.
+*(Superseded by v0.2.4: it inserts a `[base prompt]` token instead of clearing.)*
 
 - New file `javascript/batch_adetailer.js` — Forge auto-loads `javascript/*.js` from every
   extension (`ui_gradio_extensions.py:20`, `scripts.list_scripts("javascript", ".js")`).
