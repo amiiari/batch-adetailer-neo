@@ -896,14 +896,36 @@ def _control_updates(config, num_slots, choices=None):
     return updates
 
 
-def _on_files(files, store, num_slots):
+def _on_files(files, store, num_slots, name_filter=""):
     """
     Files dropped: seed a config for each new image from the user's saved
     ADetailer defaults, keep configs for images that were already loaded, and
     show the first image's config.
+
+    If name_filter is set, only files whose stem ends with it are accepted —
+    drag a whole folder in and e.g. only the "-hires" images survive (bases and
+    "-hires-adetailer"/"-hires-edited" don't end with "-hires", so they drop).
+    The first return value re-writes the file widget with the accepted list;
+    it is gr.skip() when nothing was filtered out, which is what stops the
+    change-event loop the rewrite would otherwise cause.
     """
     paths = [f if isinstance(f, str) else getattr(f, "name", None) for f in (files or [])]
     paths = [p for p in paths if p]
+
+    name_filter = (name_filter or "").strip().lower()
+    file_input_update = gr.skip()
+    if name_filter and paths:
+        kept = [
+            p for p in paths
+            if os.path.splitext(os.path.basename(p))[0].lower().endswith(name_filter)
+        ]
+        if len(kept) != len(paths):
+            print(
+                f"[Batch ADetailer] filter {name_filter!r}: kept {len(kept)} of {len(paths)} dropped files",
+                flush=True,
+            )
+            paths = kept
+            file_input_update = gr.update(value=paths or None)
 
     store = dict(store or {})
     defaults = _get_adetailer_defaults()
@@ -912,6 +934,7 @@ def _on_files(files, store, num_slots):
     if not paths:
         blank = _default_config(defaults, num_slots)
         return [
+            file_input_update,            # file widget (filtered list)
             gr.update(value=None),        # source gallery
             [],                           # paths_state
             {},                           # store_state
@@ -926,6 +949,7 @@ def _on_files(files, store, num_slots):
     }
 
     return [
+        file_input_update,
         gr.update(value=paths, selected_index=0),
         paths,
         store,
@@ -1190,6 +1214,13 @@ def _build_ui_tab():
             file_types=["image"],
             type="filepath",
         )
+        name_filter_box = gr.Textbox(
+            label="Only accept filenames ending with (empty = accept everything)",
+            value="-hires",
+            max_lines=1,
+            elem_id="batch_adetailer_name_filter",
+            info="Drag a whole folder in: anything whose name doesn't end with this is ignored.",
+        )
 
         with gr.Row():
             # ── Left column: per-image unit editor ──
@@ -1304,8 +1335,8 @@ def _build_ui_tab():
         # keyword-only one, and gradio only scans *positional* params when it
         # decides where to inject the event data — so the click event would never
         # be passed. Closures keep the signatures clean.
-        def on_files(files, store):
-            return _on_files(files, store, num_slots)
+        def on_files(files, store, name_filter):
+            return _on_files(files, store, num_slots, name_filter)
 
         def on_select_image(store, paths, evt: gr.SelectData):
             return _on_select_image(store, paths, num_slots, evt)
@@ -1315,8 +1346,8 @@ def _build_ui_tab():
 
         file_input.change(
             fn=on_files,
-            inputs=[file_input, store_state],
-            outputs=[source_gallery, paths_state, store_state, sel_state, editing_md, *controls],
+            inputs=[file_input, store_state, name_filter_box],
+            outputs=[file_input, source_gallery, paths_state, store_state, sel_state, editing_md, *controls],
             queue=False,
         )
 
