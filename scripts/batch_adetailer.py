@@ -144,7 +144,7 @@ def _get_num_slots():
         return DEFAULT_NUM_SLOTS
 
 
-def _get_adetailer_defaults():
+def _get_adetailer_defaults(preset=None):
     """
     The user's *saved* img2img ADetailer defaults, one dict per unit — i.e. what
     they configured via Settings → Defaults (ui-config.json), not ADetailer's
@@ -164,10 +164,15 @@ def _get_adetailer_defaults():
     """
     ad_script = _find_adetailer_script()
     if ad_script is None or not getattr(ad_script, "controls", None):
+        print(
+            f"[Batch ADetailer] defaults unavailable: script={ad_script!r} "
+            f"controls={getattr(ad_script, 'controls', None) is not None}",
+            flush=True,
+        )
         return []
 
     out = []
-    for state in ad_script.controls[2:]:  # [ad_enable, ad_skip_img2img, *unit states]
+    for i, state in enumerate(ad_script.controls[2:]):  # [ad_enable, ad_skip_img2img, *unit states]
         values = None
 
         load_event = getattr(state, "load_event_to_attach", None)
@@ -181,8 +186,36 @@ def _get_adetailer_defaults():
             values = dict(getattr(state, "value", None) or {})
 
         values.pop("is_api", None)  # leave ADetailerArgs' own default in place
+        values.update(_preset_unit_overrides(i, preset))
         out.append(values)
 
+    return out
+
+
+def _preset_unit_overrides(unit_index, preset=None):
+    """
+    The active UI preset's saved ADetailer defaults for one unit, read straight
+    from settings (written by the hide-quicksettings preset switcher). This is
+    the source of truth for per-preset values — unlike widget scraping it works
+    at any time, including UI build, regardless of gradio event ordering.
+    """
+    preset = preset or getattr(shared.opts, "forge_preset", None)
+    if not preset:
+        return {}
+    u = unit_index + 1
+    out = {}
+    for field, key in (
+        ("ad_model", f"{preset}_default_ad_model_{u}"),
+        ("ad_prompt", f"{preset}_default_ad_prompt_{u}"),
+        ("ad_negative_prompt", f"{preset}_default_ad_neg_prompt_{u}"),
+    ):
+        raw = getattr(shared.opts, key, None)
+        if raw is None:
+            continue
+        raw = str(raw).strip()
+        if not raw:
+            continue  # blank = no per-preset default saved
+        out[field] = "" if raw == "EMPTY" else raw
     return out
 
 
@@ -192,13 +225,15 @@ def _ad_field_names():
     single stray key makes the whole unit fail validation and get dropped
     silently — everything we hand over gets filtered through this.
     """
-    try:
-        model = sys.modules["adetailer"].ADetailerArgs
-        fields = set(getattr(model, "__fields__", None) or model.model_fields)
-        if fields:
-            return fields
-    except Exception:
-        pass
+    # "adetailer" = aadetailer-neoforge, "lib_adetailer.args" = ADetailer-Neo
+    for mod_name in ("adetailer", "lib_adetailer.args"):
+        try:
+            model = sys.modules[mod_name].ADetailerArgs
+            fields = set(getattr(model, "__fields__", None) or model.model_fields)
+            if fields:
+                return fields
+        except Exception:
+            pass
     return set(_FALLBACK_AD_FIELDS)
 
 
@@ -208,11 +243,14 @@ def _preset_choices(defaults):
     (label, value) pairs — the label shows the unit's model so the user can tell
     the face unit from the hand unit at a glance.
     """
+    # Dropdown values are 1-based (unit number, not index): gradio's dropdown
+    # frontend treats the value 0 as "no value" and falls back to displaying
+    # the first choice, which made unit 1 render as "slot disabled".
     choices = [("— slot disabled —", PRESET_DISABLED)]
     for i, unit in enumerate(defaults):
         model = str(unit.get("ad_model", "None") or "None")
         label = f"Unit {i + 1} — {model}" if model != "None" else f"Unit {i + 1} — (no model set)"
-        choices.append((label, i))
+        choices.append((label, i + 1))
     return choices
 
 # ──────────────────────────────────────────────
@@ -248,7 +286,7 @@ def _default_config(defaults, num_slots):
         # A unit with no model set can't detect anything, so leave that slot
         # disabled rather than pre-selecting a unit that would never run.
         if unit and str(unit.get("ad_model", "None") or "None") != "None":
-            config += _slot_values_from_unit(i, unit)
+            config += _slot_values_from_unit(i + 1, unit)  # 1-based unit number
         else:
             config += _blank_slot_values()
     return config
@@ -267,11 +305,11 @@ def _config_to_unit_dicts(config, defaults, num_slots):
         if len(chunk) < CONTROLS_PER_SLOT:
             continue
 
-        preset = chunk[0]
-        if preset is None or int(preset) < 0 or int(preset) >= len(defaults):
+        preset = chunk[0]  # 1-based unit number; <= 0 means slot disabled
+        if preset is None or int(preset) <= 0 or int(preset) > len(defaults):
             continue
 
-        unit = dict(defaults[int(preset)])
+        unit = dict(defaults[int(preset) - 1])
         if not unit:
             continue
 
@@ -351,7 +389,7 @@ def _assemble_script_args(unit_dicts):
     if ad_script is None:
         return None, (
             "ADetailer not found on the img2img tab. Install/enable the ADetailer "
-            "extension (aadetailer-neoforge) and reload the UI."
+            "extension (ADetailer-Neo) and reload the UI."
         )
 
     script_args = _get_default_script_args().copy()
@@ -714,7 +752,7 @@ def batch_adetailer_process(store, paths, sel, use_original_name, filename_suffi
     if _find_adetailer_script() is None:
         yield (
             "❌ ADetailer not found on the img2img tab.\n\n"
-            "This extension drives the ADetailer extension (aadetailer-neoforge) — "
+            "This extension drives the ADetailer extension (ADetailer-Neo) — "
             "install/enable it and reload the UI."
         )
         return
@@ -973,12 +1011,12 @@ def _on_preset_change(store, paths, sel, preset, slot, num_slots):
     """
     defaults = _get_adetailer_defaults()
 
-    preset_idx = int(preset) if preset is not None else PRESET_DISABLED
-    if 0 <= preset_idx < len(defaults):
-        values = _slot_values_from_unit(preset_idx, defaults[preset_idx])
+    preset_val = int(preset) if preset is not None else PRESET_DISABLED  # 1-based
+    if 0 < preset_val <= len(defaults):
+        values = _slot_values_from_unit(preset_val, defaults[preset_val - 1])
     else:
         values = _blank_slot_values()
-        values[0] = preset_idx
+        values[0] = preset_val
 
     store = dict(store or {})
     if sel is not None and paths and 0 <= int(sel) < len(paths):
@@ -1027,25 +1065,35 @@ def _on_apply_to_all(store, paths, sel, *control_values):
 # ──────────────────────────────────────────────
 # Gradio UI Tab
 # ──────────────────────────────────────────────
-def _slot_controls(slot_index, num_slots):
+def _slot_controls(slot_index, num_slots, choices=None, initial=None):
     """
     One execution slot's controls. Order must match the config layout:
     [preset, prompt, negative, confidence, denoise, max_ratio].
     """
-    # Real labels (with each unit's model) are filled in on file drop, once
-    # ADetailer's saved defaults are readable.
-    choices = [("— slot disabled —", PRESET_DISABLED)] + [
-        (f"Unit {i + 1}", i) for i in range(num_slots)
-    ]
+    # Real labels (with each unit's model) are resolved at build time from the
+    # active UI preset's saved defaults; the generic ones are only a fallback.
+    if not choices:
+        choices = [("— slot disabled —", PRESET_DISABLED)] + [
+            (f"Unit {i + 1}", i + 1) for i in range(num_slots)  # values 1-based
+        ]
+
+    # Pre-fill the controls with the unit's cloned defaults so the tab shows
+    # what each slot would run with even before any image is dropped.
+    if initial and len(initial) == CONTROLS_PER_SLOT:
+        preset_v, prompt_v, negative_v, conf_v, den_v, ratio_v = initial
+    else:
+        preset_v = slot_index + 1 if slot_index < num_slots else PRESET_DISABLED
+        prompt_v, negative_v, conf_v, den_v, ratio_v = "", "", 0.3, 0.4, 1.0
 
     preset = gr.Dropdown(
         choices=choices,
-        value=slot_index if slot_index < num_slots else PRESET_DISABLED,
+        value=preset_v,
         label="ADetailer unit (brings its model + your saved settings)",
     )
 
     # lines = rows shown at rest; the box grows with the text up to max_lines.
     prompt = gr.Textbox(
+        value=prompt_v,
         label="ADetailer prompt",
         placeholder=(
             "Empty = reuse this image's own prompt from its metadata. "
@@ -1055,6 +1103,7 @@ def _slot_controls(slot_index, num_slots):
         max_lines=20,
     )
     negative_prompt = gr.Textbox(
+        value=negative_v,
         label="ADetailer negative prompt",
         placeholder="Empty = reuse this image's own negative prompt ([base prompt] works here too)",
         lines=5,
@@ -1064,19 +1113,26 @@ def _slot_controls(slot_index, num_slots):
     with gr.Row():
         confidence = gr.Slider(
             minimum=0.0, maximum=1.0, step=0.01,
-            value=0.3, label="Detection confidence",
+            value=conf_v, label="Detection confidence",
         )
         denoising_strength = gr.Slider(
             minimum=0.0, maximum=1.0, step=0.01,
-            value=0.4, label="Inpaint denoising strength",
+            value=den_v, label="Inpaint denoising strength",
         )
 
     mask_max_ratio = gr.Slider(
         minimum=0.0, maximum=1.0, step=0.001,
-        value=1.0, label="Mask max area ratio (ignore detections bigger than this)",
+        value=ratio_v, label="Mask max area ratio (ignore detections bigger than this)",
     )
 
-    return [preset, prompt, negative_prompt, confidence, denoising_strength, mask_max_ratio]
+    controls = [preset, prompt, negative_prompt, confidence, denoising_strength, mask_max_ratio]
+    # Keep UiLoadsave's hands off these: slot values are per-image/per-preset
+    # state cloned from the ADetailer units at build time — letting Settings →
+    # Defaults capture them saved stale junk (and corrupted the unit dropdown,
+    # since all four slots share one ui-config key).
+    for c in controls:
+        c.do_not_save_to_config = True
+    return controls
 
 
 def _build_ui_tab():
@@ -1152,11 +1208,34 @@ def _build_ui_tab():
             with gr.Column(scale=1):
                 editing_md = gr.Markdown(_editing_label([], None))
 
+                # Resolve the real unit labels now — the img2img ADetailer UI
+                # is already built (extension tabs come after it), and the
+                # per-preset model defaults come from settings, so this works
+                # at build time.
+                try:
+                    _build_defaults = _get_adetailer_defaults()
+                    build_choices = _preset_choices(_build_defaults) if _build_defaults else None
+                    build_config = _default_config(_build_defaults, num_slots) if _build_defaults else None
+                    print(
+                        f"[Batch ADetailer] build-time unit models: "
+                        f"{[d.get('ad_model') for d in _build_defaults]}",
+                        flush=True,
+                    )
+                except Exception as e:
+                    build_choices = None
+                    build_config = None
+                    print(f"[Batch ADetailer] build-time defaults failed: {e!r}", flush=True)
+
                 slot_controls: list = []
                 with gr.Tabs():
                     for i in range(num_slots):
                         with gr.Tab(f"Slot {i + 1}"):
-                            slot_controls.append(_slot_controls(i, num_slots))
+                            chunk = (
+                                build_config[i * CONTROLS_PER_SLOT : (i + 1) * CONTROLS_PER_SLOT]
+                                if build_config
+                                else None
+                            )
+                            slot_controls.append(_slot_controls(i, num_slots, build_choices, chunk))
 
                 controls = [c for slot in slot_controls for c in slot]
                 presets = [slot[0] for slot in slot_controls]
@@ -1215,6 +1294,23 @@ def _build_ui_tab():
                 )
 
         # ── wiring ──
+
+        # Re-clone every slot (choices with real model labels + values) from the
+        # ADetailer units. Runs at app load as a safety net over anything that
+        # stomped the build-time values, and the hide-quicksettings extension
+        # calls it on UI-preset switches via the shared hook below.
+        def _refresh_all_slots(preset=None):
+            defaults = _get_adetailer_defaults(preset)
+            if not defaults:
+                return [gr.skip()] * len(controls)
+            choices = _preset_choices(defaults)
+            config = _default_config(defaults, num_slots)
+            return _control_updates(config, num_slots, choices)
+
+        block.load(_refresh_all_slots, inputs=[], outputs=controls, queue=False, show_progress=False)
+
+        # Cooperative hook: lets the preset switcher live-refresh these slots.
+        shared.batch_adetailer_refresh = (_refresh_all_slots, controls)
         # These are closures rather than functools.partial: binding a keyword arg
         # with partial turns the trailing `evt: gr.SelectData` parameter into a
         # keyword-only one, and gradio only scans *positional* params when it
