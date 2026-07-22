@@ -49,10 +49,11 @@ CONTROLS_PER_SLOT = 1 + len(OVERRIDE_ATTRS)
 
 PRESET_DISABLED = -1
 
-# What right-click drops into a slot's prompt box. ADetailer's own placeholder for
-# "the image's prompt" is [PROMPT] (adetailer/scripts/!adetailer.py :: _get_prompt);
-# this is a friendlier spelling of it, translated back before the unit is handed over.
-BASE_PROMPT_TOKEN = "[base prompt]"
+# What right-click drops into a slot's prompt box: ADetailer's own placeholder for
+# "the image's prompt" (adetailer/scripts/!adetailer.py :: _get_prompt), used as-is.
+# _BASE_PROMPT_RE still rewrites the old "[base prompt]" spelling for backward compat
+# with prompts saved before v0.5.
+BASE_PROMPT_TOKEN = "[PROMPT]"
 _BASE_PROMPT_RE = re.compile(r"\[\s*base\s*prompt\s*\]", re.IGNORECASE)
 
 DEFAULT_NUM_SLOTS = 4
@@ -87,6 +88,23 @@ def _register_settings():
     )
 
     shared.opts.add_option(
+        "batch_adetailer_scan_roots",
+        shared.OptionInfo(
+            r"C:\gulp\1. generations and tweaking\Commissions;"
+            r"C:\gulp\1. generations and tweaking\Requests",
+            "Test-folder scan roots (semicolon-separated)", gr.Textbox, {}, section=section)
+        .info("Each root is scanned for <set>/Tests folders by the Test Folders panel. "
+              "Non-existent roots are silently skipped."),
+    )
+
+    shared.opts.add_option(
+        "batch_adetailer_max_images",
+        shared.OptionInfo(50, "Max Images per Batch", gr.Slider,
+                          {"minimum": 1, "maximum": 500, "step": 1}, section=section)
+        .info("Maximum number of images that can be processed in one batch."),
+    )
+
+    shared.opts.add_option(
         "batch_adetailer_skip_errors",
         shared.OptionInfo(True, "Skip Failed Images and Continue", gr.Checkbox,
                           {}, section=section)
@@ -104,6 +122,61 @@ def _register_settings():
             "names are re-pointed at the matching file in your Lora folder."
         ),
     )
+
+# ──────────────────────────────────────────────
+# Test-folder scanning
+#
+# Commission/request sets keep work-in-progress test images in a Tests/
+# subfolder: NrM.png bases with their hires-fixed variants next to them as
+# NrM-hires.png — which are what ADetailer runs on. A -hires image is
+# "pending" while it has no -adetailer (or -edited) successor.
+# ──────────────────────────────────────────────
+_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".jxl", ".avif", ".heif")
+_DONE_TOKENS = ("-adetailer", "-edited")
+
+
+def _natural_key(name):
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", name)]
+
+
+def _pending_hires(folder):
+    """Full paths of -hires images in `folder` that have no -adetailer/-edited
+    successor, in natural order (2r1-hires before 10r1-hires)."""
+    try:
+        files = sorted(os.listdir(folder), key=_natural_key)
+    except OSError:
+        return []
+
+    image_files = [f for f in files if os.path.splitext(f)[1].lower() in _IMAGE_EXTS]
+    stems = {os.path.splitext(f)[0] for f in image_files}
+
+    out = []
+    for f in image_files:
+        stem = os.path.splitext(f)[0]
+        if not stem.endswith("-hires"):
+            continue  # bases, -adetailer/-edited outputs, collision copies
+        if any(f"{stem}{tok}" in stems for tok in _DONE_TOKENS):
+            continue  # already detailed (or hand-edited past this stage)
+        out.append(os.path.join(folder, f))
+    return out
+
+
+def _scan_test_folders():
+    """[(label, tests_dir_path)] for every <root>/<set>/Tests that still has
+    pending -hires images. Roots come from the scan-roots setting."""
+    roots = getattr(shared.opts, "batch_adetailer_scan_roots", "") or ""
+    choices = []
+    for root in (r.strip() for r in roots.split(";")):
+        if not root or not os.path.isdir(root):
+            continue
+        for name in sorted(os.listdir(root), key=_natural_key):
+            tdir = os.path.join(root, name, "Tests")  # also matches "tests": NTFS is case-insensitive
+            if os.path.isdir(tdir):
+                n = len(_pending_hires(tdir))
+                if n:
+                    choices.append((f"{name}  ({n} to do)", tdir))
+    return choices
+
 
 # ──────────────────────────────────────────────
 # Talking to the installed ADetailer extension
@@ -137,7 +210,7 @@ def _get_num_slots():
         return DEFAULT_NUM_SLOTS
 
 
-def _get_adetailer_defaults(preset=None):
+def _get_adetailer_defaults():
     """
     The user's *saved* img2img ADetailer defaults, one dict per unit — i.e. what
     they configured via Settings → Defaults (ui-config.json), not ADetailer's
@@ -157,15 +230,10 @@ def _get_adetailer_defaults(preset=None):
     """
     ad_script = _find_adetailer_script()
     if ad_script is None or not getattr(ad_script, "controls", None):
-        print(
-            f"[Batch ADetailer] defaults unavailable: script={ad_script!r} "
-            f"controls={getattr(ad_script, 'controls', None) is not None}",
-            flush=True,
-        )
         return []
 
     out = []
-    for i, state in enumerate(ad_script.controls[2:]):  # [ad_enable, ad_skip_img2img, *unit states]
+    for state in ad_script.controls[2:]:  # [ad_enable, ad_skip_img2img, *unit states]
         values = None
 
         load_event = getattr(state, "load_event_to_attach", None)
@@ -179,36 +247,8 @@ def _get_adetailer_defaults(preset=None):
             values = dict(getattr(state, "value", None) or {})
 
         values.pop("is_api", None)  # leave ADetailerArgs' own default in place
-        values.update(_preset_unit_overrides(i, preset))
         out.append(values)
 
-    return out
-
-
-def _preset_unit_overrides(unit_index, preset=None):
-    """
-    The active UI preset's saved ADetailer defaults for one unit, read straight
-    from settings (written by the hide-quicksettings preset switcher). This is
-    the source of truth for per-preset values — unlike widget scraping it works
-    at any time, including UI build, regardless of gradio event ordering.
-    """
-    preset = preset or getattr(shared.opts, "forge_preset", None)
-    if not preset:
-        return {}
-    u = unit_index + 1
-    out = {}
-    for field, key in (
-        ("ad_model", f"{preset}_default_ad_model_{u}"),
-        ("ad_prompt", f"{preset}_default_ad_prompt_{u}"),
-        ("ad_negative_prompt", f"{preset}_default_ad_neg_prompt_{u}"),
-    ):
-        raw = getattr(shared.opts, key, None)
-        if raw is None:
-            continue
-        raw = str(raw).strip()
-        if not raw:
-            continue  # blank = no per-preset default saved
-        out[field] = "" if raw == "EMPTY" else raw
     return out
 
 
@@ -218,15 +258,13 @@ def _ad_field_names():
     single stray key makes the whole unit fail validation and get dropped
     silently — everything we hand over gets filtered through this.
     """
-    # "adetailer" = aadetailer-neoforge, "lib_adetailer.args" = ADetailer-Neo
-    for mod_name in ("adetailer", "lib_adetailer.args"):
-        try:
-            model = sys.modules[mod_name].ADetailerArgs
-            fields = set(getattr(model, "__fields__", None) or model.model_fields)
-            if fields:
-                return fields
-        except Exception:
-            pass
+    try:
+        model = sys.modules["adetailer"].ADetailerArgs
+        fields = set(getattr(model, "__fields__", None) or model.model_fields)
+        if fields:
+            return fields
+    except Exception:
+        pass
     return set(_FALLBACK_AD_FIELDS)
 
 
@@ -236,14 +274,11 @@ def _preset_choices(defaults):
     (label, value) pairs — the label shows the unit's model so the user can tell
     the face unit from the hand unit at a glance.
     """
-    # Dropdown values are 1-based (unit number, not index): gradio's dropdown
-    # frontend treats the value 0 as "no value" and falls back to displaying
-    # the first choice, which made unit 1 render as "slot disabled".
     choices = [("— slot disabled —", PRESET_DISABLED)]
     for i, unit in enumerate(defaults):
         model = str(unit.get("ad_model", "None") or "None")
         label = f"Unit {i + 1} — {model}" if model != "None" else f"Unit {i + 1} — (no model set)"
-        choices.append((label, i + 1))
+        choices.append((label, i))
     return choices
 
 # ──────────────────────────────────────────────
@@ -279,7 +314,7 @@ def _default_config(defaults, num_slots):
         # A unit with no model set can't detect anything, so leave that slot
         # disabled rather than pre-selecting a unit that would never run.
         if unit and str(unit.get("ad_model", "None") or "None") != "None":
-            config += _slot_values_from_unit(i + 1, unit)  # 1-based unit number
+            config += _slot_values_from_unit(i, unit)
         else:
             config += _blank_slot_values()
     return config
@@ -298,11 +333,11 @@ def _config_to_unit_dicts(config, defaults, num_slots):
         if len(chunk) < CONTROLS_PER_SLOT:
             continue
 
-        preset = chunk[0]  # 1-based unit number; <= 0 means slot disabled
-        if preset is None or int(preset) <= 0 or int(preset) > len(defaults):
+        preset = chunk[0]
+        if preset is None or int(preset) < 0 or int(preset) >= len(defaults):
             continue
 
-        unit = dict(defaults[int(preset) - 1])
+        unit = dict(defaults[int(preset)])
         if not unit:
             continue
 
@@ -382,7 +417,7 @@ def _assemble_script_args(unit_dicts):
     if ad_script is None:
         return None, (
             "ADetailer not found on the img2img tab. Install/enable the ADetailer "
-            "extension (ADetailer-Neo) and reload the UI."
+            "extension (aadetailer-neoforge) and reload the UI."
         )
 
     script_args = _get_default_script_args().copy()
@@ -553,7 +588,7 @@ def _fix_infotext(infotext: str | None, width: int, height: int, steps: int | No
     return infotext
 
 
-def _save_with_original_name(processed, p, stem: str, suffix: str, orig_size, orig_steps):
+def _save_with_original_name(processed, p, save_opts: dict, orig_size, orig_steps):
     """
     Save result images as <original filename><suffix>.<ext> directly in the
     output directory (no dated subfolders, no [seed]-[prompt] naming pattern).
@@ -561,7 +596,8 @@ def _save_with_original_name(processed, p, stem: str, suffix: str, orig_size, or
     """
     outdir = p.outpath_samples
     os.makedirs(outdir, exist_ok=True)
-    extension = shared.opts.samples_format
+    extension = save_opts.get("format") or shared.opts.samples_format
+    stem, suffix = save_opts["stem"], save_opts.get("suffix", "")
 
     for i, image in enumerate(processed.images):
         base = f"{stem}{suffix}" if i == 0 else f"{stem}{suffix}-{i}"
@@ -628,7 +664,8 @@ def _process_single_image(img: Image.Image, geninfo: str | None, unit_dicts: lis
 
         p = processing.StableDiffusionProcessingImg2Img(
             outpath_samples=(
-                getattr(shared.opts, "batch_adetailer_output_dir", None)
+                save_opts.get("output_dir")
+                or getattr(shared.opts, "batch_adetailer_output_dir", None)
                 or shared.opts.outdir_samples
                 or shared.opts.outdir_img2img_samples
             ),
@@ -693,11 +730,15 @@ def _process_single_image(img: Image.Image, geninfo: str | None, unit_dicts: lis
             if processed is None:
                 processed = processing.process_images(p)
 
+        if shared.state.interrupted or shared.state.stopping_generation:
+            # An interrupted inpaint returns a partial/unfinished result;
+            # saving it would make the image look finished (and with
+            # save-to-source would hide it from the pending scan forever) —
+            # drop it instead.
+            return [], [], None, notes
+
         if save_opts.get("use_original_name"):
-            _save_with_original_name(
-                processed, p, save_opts["stem"], save_opts.get("suffix", ""),
-                orig_size, orig_steps,
-            )
+            _save_with_original_name(processed, p, save_opts, orig_size, orig_steps)
 
         return processed.images, processed.infotexts, None, notes
     except Exception:
@@ -706,7 +747,7 @@ def _process_single_image(img: Image.Image, geninfo: str | None, unit_dicts: lis
         return [], [], tb, notes
 
 
-def batch_adetailer_run_selected(store, paths, sel, use_original_name, filename_suffix, *control_values):
+def batch_adetailer_run_selected(store, paths, sel, use_original_name, filename_suffix, save_to_source, *control_values):
     """
     Re-run just the selected image — for when a batch came out fine except for one
     or two. It's the batch loop over a single path, so the config, saving and
@@ -719,14 +760,18 @@ def batch_adetailer_run_selected(store, paths, sel, use_original_name, filename_
         return
 
     yield from batch_adetailer_process(
-        store, [paths[int(sel)]], 0, use_original_name, filename_suffix, *control_values
+        store, [paths[int(sel)]], 0, use_original_name, filename_suffix, save_to_source, *control_values
     )
 
 
-def batch_adetailer_process(store, paths, sel, use_original_name, filename_suffix, *control_values):
+def batch_adetailer_process(store, paths, sel, use_original_name, filename_suffix, save_to_source, *control_values):
     """
     Main batch processing function. Each image is processed with its own config
     from the store, sequentially.
+
+    save_to_source: each result is saved next to its own source image as
+    <stem>-adetailer.png (suffix and png forced — that naming is what the
+    pending scan and the rest of the pipeline key on).
 
     control_values are the live values of the currently-visible slot controls. We
     fold them back into the store first, so an edit that hasn't landed as a
@@ -745,12 +790,17 @@ def batch_adetailer_process(store, paths, sel, use_original_name, filename_suffi
     if _find_adetailer_script() is None:
         yield (
             "❌ ADetailer not found on the img2img tab.\n\n"
-            "This extension drives the ADetailer extension (ADetailer-Neo) — "
+            "This extension drives the ADetailer extension (aadetailer-neoforge) — "
             "install/enable it and reload the UI."
         )
         return
 
+    max_images = shared.opts.batch_adetailer_max_images
     skip_errors = shared.opts.batch_adetailer_skip_errors
+
+    if len(paths) > max_images:
+        yield f"Too many images ({len(paths)}). Max is {max_images}."
+        return
 
     # Snapshot the store: the running generator holds the gr.State by reference,
     # and a stray .change event could otherwise mutate it mid-run.
@@ -772,7 +822,13 @@ def batch_adetailer_process(store, paths, sel, use_original_name, filename_suffi
     failed_count = 0
 
     for idx, image_path in enumerate(paths):
-        name = os.path.basename(image_path)
+        fname = os.path.basename(image_path)
+        name = fname
+        if save_to_source:
+            # Every Tests folder has a 1r1-hires.png — prefix the set so the
+            # status lines read "Commission 137 - M, Fluorite/1r1-hires.png".
+            set_dir = os.path.dirname(os.path.dirname(image_path))
+            name = f"{os.path.basename(set_dir)}/{fname}"
 
         if _cancel_requested:
             status_messages.append(f"⏹️ Cancelled — {idx} of {total} images processed.")
@@ -810,9 +866,16 @@ def batch_adetailer_process(store, paths, sel, use_original_name, filename_suffi
 
         save_opts = {
             "use_original_name": bool(use_original_name),
-            "stem": os.path.splitext(name)[0],
+            "stem": os.path.splitext(fname)[0],
             "suffix": filename_suffix or "",
         }
+        if save_to_source:
+            save_opts["use_original_name"] = True
+            save_opts["suffix"] = "-adetailer"
+            save_opts["output_dir"] = os.path.dirname(image_path)
+            # png keeps the infotext and is what the pipeline expects, even if
+            # the global samples_format is jpg/jxl/...
+            save_opts["format"] = "png"
 
         # state.begin() resets state.interrupted / stopping_generation, which
         # otherwise stay True forever after a UI reload (request_restart calls
@@ -896,36 +959,32 @@ def _control_updates(config, num_slots, choices=None):
     return updates
 
 
-def _on_files(files, store, num_slots, name_filter=""):
+def _on_files(files, store, num_slots, suffix_filter):
     """
-    Files dropped: seed a config for each new image from the user's saved
-    ADetailer defaults, keep configs for images that were already loaded, and
-    show the first image's config.
-
-    If name_filter is set, only files whose stem ends with it are accepted —
-    drag a whole folder in and e.g. only the "-hires" images survive (bases and
-    "-hires-adetailer"/"-hires-edited" don't end with "-hires", so they drop).
-    The first return value re-writes the file widget with the accepted list;
-    it is gr.skip() when nothing was filtered out, which is what stops the
-    change-event loop the rewrite would otherwise cause.
+    Files dropped: keep only files whose stem ends with the suffix filter (so a
+    whole folder can be dragged in and only the `-hires` variants load), seed a
+    config for each new image from the user's saved ADetailer defaults, keep
+    configs for images that were already loaded, and show the first image's config.
     """
     paths = [f if isinstance(f, str) else getattr(f, "name", None) for f in (files or [])]
     paths = [p for p in paths if p]
 
-    name_filter = (name_filter or "").strip().lower()
-    file_input_update = gr.skip()
-    if name_filter and paths:
-        kept = [
-            p for p in paths
-            if os.path.splitext(os.path.basename(p))[0].lower().endswith(name_filter)
-        ]
-        if len(kept) != len(paths):
-            print(
-                f"[Batch ADetailer] filter {name_filter!r}: kept {len(kept)} of {len(paths)} dropped files",
-                flush=True,
-            )
-            paths = kept
-            file_input_update = gr.update(value=paths or None)
+    suffix = (suffix_filter or "").strip().lower()
+    skipped = 0
+    if suffix:
+        kept = [p for p in paths
+                if os.path.splitext(os.path.basename(p))[0].lower().endswith(suffix)]
+        skipped = len(paths) - len(kept)
+        paths = kept
+
+    # Push the filtered list back into the drop zone so it matches what loaded.
+    # gr.update() (no value) when nothing was skipped — this runs in the drop
+    # zone's own .change handler, so an unconditional write would retrigger it
+    # forever; the retrigger after a filtering pass filters nothing and stops.
+    file_update = gr.update(value=paths or None) if skipped else gr.update()
+    skip_note = (
+        f"\n\n*Skipped {skipped} file(s) not ending in `{suffix}`.*" if skipped else ""
+    )
 
     store = dict(store or {})
     defaults = _get_adetailer_defaults()
@@ -934,13 +993,14 @@ def _on_files(files, store, num_slots, name_filter=""):
     if not paths:
         blank = _default_config(defaults, num_slots)
         return [
-            file_input_update,            # file widget (filtered list)
             gr.update(value=None),        # source gallery
             [],                           # paths_state
             {},                           # store_state
             None,                         # sel_state
-            _editing_label([], None),     # editing markdown
+            _editing_label([], None) + skip_note,
             *_control_updates(blank, num_slots, choices),
+            file_update,
+            gr.update(value=None),        # preview
         ]
 
     store = {
@@ -949,13 +1009,14 @@ def _on_files(files, store, num_slots, name_filter=""):
     }
 
     return [
-        file_input_update,
         gr.update(value=paths, selected_index=0),
         paths,
         store,
         0,
-        _editing_label(paths, 0),
+        _editing_label(paths, 0) + skip_note,
         *_control_updates(store[paths[0]], num_slots, choices),
+        file_update,
+        gr.update(value=paths[0]),
     ]
 
 
@@ -969,20 +1030,24 @@ def _on_select_image(store, paths, num_slots, evt: gr.SelectData):
     idx = int(evt.index)
     paths = list(paths or [])
     if not (0 <= idx < len(paths)):
-        return [gr.update()] * (2 + num_slots * CONTROLS_PER_SLOT)
+        return [gr.update()] * (3 + num_slots * CONTROLS_PER_SLOT)
 
     config = (store or {}).get(paths[idx]) or _default_config(
         _get_adetailer_defaults(), num_slots
     )
 
-    return [idx, _editing_label(paths, idx), *_control_updates(config, num_slots)]
+    return [
+        idx, _editing_label(paths, idx),
+        *_control_updates(config, num_slots),
+        gr.update(value=paths[idx]),
+    ]
 
 
 def _on_right_click(store, paths, index, num_slots):
     """
     Thumbnail right-clicked (via javascript/batch_adetailer.js, which puts the
     index in a hidden textbox and clicks a hidden button): select that image and
-    put "[base prompt]" in Slot 1's ADetailer prompt. Left alone it behaves like
+    put "[PROMPT]" in Slot 1's ADetailer prompt. Left alone it behaves like
     an empty box (the image's own prompt); anything typed around it is appended to
     that prompt. Everything else about the slot is left as it is.
     """
@@ -992,7 +1057,7 @@ def _on_right_click(store, paths, index, num_slots):
     except (TypeError, ValueError):
         idx = -1
 
-    blank = [gr.update()] * (2 + num_slots * CONTROLS_PER_SLOT)
+    blank = [gr.update()] * (3 + num_slots * CONTROLS_PER_SLOT)
     if not (0 <= idx < len(paths)):
         return [*blank, store]
 
@@ -1003,7 +1068,12 @@ def _on_right_click(store, paths, index, num_slots):
     config[1] = BASE_PROMPT_TOKEN  # slot 1's prompt — position 0 is its preset dropdown
     store[paths[idx]] = config
 
-    return [idx, _editing_label(paths, idx), *_control_updates(config, num_slots), store]
+    return [
+        idx, _editing_label(paths, idx),
+        *_control_updates(config, num_slots),
+        gr.update(value=paths[idx]),
+        store,
+    ]
 
 
 def _on_control_change(store, paths, sel, *control_values):
@@ -1023,12 +1093,12 @@ def _on_preset_change(store, paths, sel, preset, slot, num_slots):
     """
     defaults = _get_adetailer_defaults()
 
-    preset_val = int(preset) if preset is not None else PRESET_DISABLED  # 1-based
-    if 0 < preset_val <= len(defaults):
-        values = _slot_values_from_unit(preset_val, defaults[preset_val - 1])
+    preset_idx = int(preset) if preset is not None else PRESET_DISABLED
+    if 0 <= preset_idx < len(defaults):
+        values = _slot_values_from_unit(preset_idx, defaults[preset_idx])
     else:
         values = _blank_slot_values()
-        values[0] = preset_val
+        values[0] = preset_idx
 
     store = dict(store or {})
     if sel is not None and paths and 0 <= int(sel) < len(paths):
@@ -1077,47 +1147,36 @@ def _on_apply_to_all(store, paths, sel, *control_values):
 # ──────────────────────────────────────────────
 # Gradio UI Tab
 # ──────────────────────────────────────────────
-def _slot_controls(slot_index, num_slots, choices=None, initial=None):
+def _slot_controls(slot_index, num_slots):
     """
     One execution slot's controls. Order must match the config layout:
     [preset, prompt, negative, confidence, denoise, max_ratio].
     """
-    # Real labels (with each unit's model) are resolved at build time from the
-    # active UI preset's saved defaults; the generic ones are only a fallback.
-    if not choices:
-        choices = [("— slot disabled —", PRESET_DISABLED)] + [
-            (f"Unit {i + 1}", i + 1) for i in range(num_slots)  # values 1-based
-        ]
-
-    # Pre-fill the controls with the unit's cloned defaults so the tab shows
-    # what each slot would run with even before any image is dropped.
-    if initial and len(initial) == CONTROLS_PER_SLOT:
-        preset_v, prompt_v, negative_v, conf_v, den_v, ratio_v = initial
-    else:
-        preset_v = slot_index + 1 if slot_index < num_slots else PRESET_DISABLED
-        prompt_v, negative_v, conf_v, den_v, ratio_v = "", "", 0.3, 0.4, 1.0
+    # Real labels (with each unit's model) are filled in on file drop, once
+    # ADetailer's saved defaults are readable.
+    choices = [("— slot disabled —", PRESET_DISABLED)] + [
+        (f"Unit {i + 1}", i) for i in range(num_slots)
+    ]
 
     preset = gr.Dropdown(
         choices=choices,
-        value=preset_v,
+        value=slot_index if slot_index < num_slots else PRESET_DISABLED,
         label="ADetailer unit (brings its model + your saved settings)",
     )
 
     # lines = rows shown at rest; the box grows with the text up to max_lines.
     prompt = gr.Textbox(
-        value=prompt_v,
         label="ADetailer prompt",
         placeholder=(
             "Empty = reuse this image's own prompt from its metadata. "
-            "Or write [base prompt] to build on it: '[base prompt], detailed eyes'"
+            "Or write [PROMPT] to build on it: '[PROMPT], detailed eyes'"
         ),
         lines=5,
         max_lines=20,
     )
     negative_prompt = gr.Textbox(
-        value=negative_v,
         label="ADetailer negative prompt",
-        placeholder="Empty = reuse this image's own negative prompt ([base prompt] works here too)",
+        placeholder="Empty = reuse this image's own negative prompt ([PROMPT] works here too)",
         lines=5,
         max_lines=20,
     )
@@ -1125,26 +1184,19 @@ def _slot_controls(slot_index, num_slots, choices=None, initial=None):
     with gr.Row():
         confidence = gr.Slider(
             minimum=0.0, maximum=1.0, step=0.01,
-            value=conf_v, label="Detection confidence",
+            value=0.3, label="Detection confidence",
         )
         denoising_strength = gr.Slider(
             minimum=0.0, maximum=1.0, step=0.01,
-            value=den_v, label="Inpaint denoising strength",
+            value=0.4, label="Inpaint denoising strength",
         )
 
     mask_max_ratio = gr.Slider(
         minimum=0.0, maximum=1.0, step=0.001,
-        value=ratio_v, label="Mask max area ratio (ignore detections bigger than this)",
+        value=1.0, label="Mask max area ratio (ignore detections bigger than this)",
     )
 
-    controls = [preset, prompt, negative_prompt, confidence, denoising_strength, mask_max_ratio]
-    # Keep UiLoadsave's hands off these: slot values are per-image/per-preset
-    # state cloned from the ADetailer units at build time — letting Settings →
-    # Defaults capture them saved stale junk (and corrupted the unit dropdown,
-    # since all four slots share one ui-config key).
-    for c in controls:
-        c.do_not_save_to_config = True
-    return controls
+    return [preset, prompt, negative_prompt, confidence, denoising_strength, mask_max_ratio]
 
 
 def _build_ui_tab():
@@ -1157,7 +1209,7 @@ def _build_ui_tab():
             "Each slot pulls its model and settings from one of your ADetailer units "
             "(as saved in the img2img panel) — you only override what varies per image. "
             "Slot order is the order the units run in.\n\n"
-            "*Right-click a thumbnail to drop `[base prompt]` into Slot 1's prompt — it stands "
+            "*Right-click a thumbnail to drop `[PROMPT]` into Slot 1's prompt — it stands "
             "for that image's own prompt, so leaving it alone inherits, and anything you add "
             "around it is appended.*"
         )
@@ -1173,7 +1225,7 @@ def _build_ui_tab():
                to scroll: the grid is the only thing that scrolls, and it fills
                whatever height the drag gives it. */
             #batch_adetailer_source {
-                height: 340px;
+                height: 200px;
                 min-height: 140px;
                 resize: vertical;
                 overflow: hidden;
@@ -1205,56 +1257,44 @@ def _build_ui_tab():
         rclick_index = gr.Textbox(visible=False, elem_id="batch_adetailer_rclick")
         rclick_btn = gr.Button(visible=False, elem_id="batch_adetailer_rclick_btn")
 
+        with gr.Accordion("📁 Test Folders — load pending -hires images", open=True):
+            folder_select = gr.CheckboxGroup(
+                choices=_scan_test_folders(),
+                label="Sets with -hires images that have no -adetailer version yet",
+            )
+            with gr.Row():
+                load_btn = gr.Button("📥 Load Selected Folders", variant="primary", scale=3)
+                rescan_btn = gr.Button("🔄 Rescan", scale=1)
+
         # The drop zone spans the full width at the top: parked in the left column it
         # grows with the file list and pushes the unit controls off the screen.
-        file_input = gr.File(
-            label="Drop images here (or click to browse)",
-            elem_id="batch_adetailer_files",
-            file_count="multiple",
-            file_types=["image"],
-            type="filepath",
-        )
-        name_filter_box = gr.Textbox(
-            label="Only accept filenames ending with (empty = accept everything)",
-            value="-hires",
-            max_lines=1,
-            elem_id="batch_adetailer_name_filter",
-            info="Drag a whole folder in: anything whose name doesn't end with this is ignored.",
-        )
+        with gr.Row():
+            file_input = gr.File(
+                label="Drop images here (or click to browse)",
+                elem_id="batch_adetailer_files",
+                file_count="multiple",
+                file_types=["image"],
+                type="filepath",
+                scale=4,
+            )
+            suffix_filter = gr.Textbox(
+                value="-hires",
+                label="Only load files ending with",
+                info="Drag a whole folder's worth in — anything else is skipped. Empty = load everything.",
+                max_lines=1,
+                scale=1,
+            )
 
         with gr.Row():
             # ── Left column: per-image unit editor ──
             with gr.Column(scale=1):
                 editing_md = gr.Markdown(_editing_label([], None))
 
-                # Resolve the real unit labels now — the img2img ADetailer UI
-                # is already built (extension tabs come after it), and the
-                # per-preset model defaults come from settings, so this works
-                # at build time.
-                try:
-                    _build_defaults = _get_adetailer_defaults()
-                    build_choices = _preset_choices(_build_defaults) if _build_defaults else None
-                    build_config = _default_config(_build_defaults, num_slots) if _build_defaults else None
-                    print(
-                        f"[Batch ADetailer] build-time unit models: "
-                        f"{[d.get('ad_model') for d in _build_defaults]}",
-                        flush=True,
-                    )
-                except Exception as e:
-                    build_choices = None
-                    build_config = None
-                    print(f"[Batch ADetailer] build-time defaults failed: {e!r}", flush=True)
-
                 slot_controls: list = []
                 with gr.Tabs():
                     for i in range(num_slots):
                         with gr.Tab(f"Slot {i + 1}"):
-                            chunk = (
-                                build_config[i * CONTROLS_PER_SLOT : (i + 1) * CONTROLS_PER_SLOT]
-                                if build_config
-                                else None
-                            )
-                            slot_controls.append(_slot_controls(i, num_slots, build_choices, chunk))
+                            slot_controls.append(_slot_controls(i, num_slots))
 
                 controls = [c for slot in slot_controls for c in slot]
                 presets = [slot[0] for slot in slot_controls]
@@ -1277,6 +1317,13 @@ def _build_ui_tab():
                         scale=1,
                     )
 
+                # Ticked automatically by "Load Selected Folders".
+                save_to_source = gr.Checkbox(
+                    value=False,
+                    label="Save next to each source image (as <name>-adetailer.png, "
+                          "ignoring the output dir and suffix above)",
+                )
+
                 with gr.Row():
                     process_btn = gr.Button(
                         "🚀 Run Batch ADetailer", variant="primary", size="lg", scale=3
@@ -1287,7 +1334,17 @@ def _build_ui_tab():
                     cancel_btn = gr.Button("⏹️ Cancel", variant="stop", size="lg", scale=1)
 
             # ── Right column: the images ──
+            # Sits directly under the drop zone: preview of the selected image
+            # first, the thumbnail strip below it, log last.
             with gr.Column(scale=2):
+                preview_img = gr.Image(
+                    label="Selected image",
+                    elem_id="batch_adetailer_preview",
+                    interactive=False,
+                    height=640,
+                    show_download_button=False,
+                )
+
                 # No `height`: the CSS below gives the block a starting height and a
                 # drag handle, and the thumbnails scroll inside it. A gradio `height`
                 # would pin the inner grid and fight the resize.
@@ -1295,7 +1352,7 @@ def _build_ui_tab():
                 # allow_preview=False keeps a click on a thumbnail a *selection*
                 # instead of popping open the full-size viewer.
                 source_gallery = gr.Gallery(
-                    label="Images — click to edit its units, right-click for Slot 1's [base prompt]",
+                    label="Images — click to edit its units, right-click for Slot 1's [PROMPT]",
                     # Deliberately NOT suffixed "_gallery": that suffix is what makes
                     # Forge's imageviewer.js attach its lightbox, which we don't want
                     # on the source thumbnails.
@@ -1313,30 +1370,13 @@ def _build_ui_tab():
                 )
 
         # ── wiring ──
-
-        # Re-clone every slot (choices with real model labels + values) from the
-        # ADetailer units. Runs at app load as a safety net over anything that
-        # stomped the build-time values, and the hide-quicksettings extension
-        # calls it on UI-preset switches via the shared hook below.
-        def _refresh_all_slots(preset=None):
-            defaults = _get_adetailer_defaults(preset)
-            if not defaults:
-                return [gr.skip()] * len(controls)
-            choices = _preset_choices(defaults)
-            config = _default_config(defaults, num_slots)
-            return _control_updates(config, num_slots, choices)
-
-        block.load(_refresh_all_slots, inputs=[], outputs=controls, queue=False, show_progress=False)
-
-        # Cooperative hook: lets the preset switcher live-refresh these slots.
-        shared.batch_adetailer_refresh = (_refresh_all_slots, controls)
         # These are closures rather than functools.partial: binding a keyword arg
         # with partial turns the trailing `evt: gr.SelectData` parameter into a
         # keyword-only one, and gradio only scans *positional* params when it
         # decides where to inject the event data — so the click event would never
         # be passed. Closures keep the signatures clean.
-        def on_files(files, store, name_filter):
-            return _on_files(files, store, num_slots, name_filter)
+        def on_files(files, store, suffix):
+            return _on_files(files, store, num_slots, suffix)
 
         def on_select_image(store, paths, evt: gr.SelectData):
             return _on_select_image(store, paths, num_slots, evt)
@@ -1346,22 +1386,23 @@ def _build_ui_tab():
 
         file_input.change(
             fn=on_files,
-            inputs=[file_input, store_state, name_filter_box],
-            outputs=[file_input, source_gallery, paths_state, store_state, sel_state, editing_md, *controls],
+            inputs=[file_input, store_state, suffix_filter],
+            outputs=[source_gallery, paths_state, store_state, sel_state, editing_md,
+                     *controls, file_input, preview_img],
             queue=False,
         )
 
         source_gallery.select(
             fn=on_select_image,
             inputs=[store_state, paths_state],
-            outputs=[sel_state, editing_md, *controls],
+            outputs=[sel_state, editing_md, *controls, preview_img],
             queue=False,
         )
 
         rclick_btn.click(
             fn=on_right_click,
             inputs=[store_state, paths_state, rclick_index],
-            outputs=[sel_state, editing_md, *controls, store_state],
+            outputs=[sel_state, editing_md, *controls, preview_img, store_state],
             queue=False,
             show_progress="hidden",
         )
@@ -1393,6 +1434,35 @@ def _build_ui_tab():
             queue=False,
         )
 
+        def _load_folders(folders):
+            """Pending -hires images of the ticked sets -> the drop zone (whose
+            .change handler then builds the gallery and per-image configs), and
+            tick save-to-source so results land back next to their sources."""
+            files = [f for folder in (folders or []) for f in _pending_hires(folder)]
+            if not files:
+                return gr.update(), gr.update(), (
+                    "No pending -hires images — tick at least one set "
+                    "(🔄 Rescan if the list is stale)."
+                )
+            return gr.update(value=files), gr.update(value=True), (
+                f"Loaded {len(files)} image(s) from {len(folders or [])} folder(s) — "
+                "configure prompts, then 🚀 Run Batch ADetailer."
+            )
+
+        load_btn.click(
+            fn=_load_folders,
+            inputs=[folder_select],
+            outputs=[file_input, save_to_source, status_text],
+            queue=False,
+        )
+
+        rescan_btn.click(
+            fn=lambda: gr.CheckboxGroup(choices=_scan_test_folders(), value=[]),
+            inputs=[],
+            outputs=[folder_select],
+            queue=False,
+        )
+
         # queue=False so the click is served straight away instead of queueing
         # behind the running batch — otherwise the cancel could never arrive.
         cancel_btn.click(
@@ -1404,7 +1474,7 @@ def _build_ui_tab():
 
         run_inputs = [
             store_state, paths_state, sel_state,
-            use_original_name, filename_suffix,
+            use_original_name, filename_suffix, save_to_source,
             *controls,
         ]
 
@@ -1412,6 +1482,10 @@ def _build_ui_tab():
             fn=batch_adetailer_process,
             inputs=run_inputs,
             outputs=[status_text],
+        ).then(  # a save-to-source run consumed pending work — keep the list honest
+            fn=lambda: gr.CheckboxGroup(choices=_scan_test_folders(), value=[]),
+            inputs=[],
+            outputs=[folder_select],
         )
 
         run_one_btn.click(

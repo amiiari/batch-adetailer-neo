@@ -1,5 +1,39 @@
 # Change Log
 
+## 2026-07-22 — Test-Folder Mode: ADetailer In Place (v0.5)
+
+- **New 📁 Test Folders panel**: scans configurable roots (Settings → "Test-folder
+  scan roots", default Commissions + Requests) for `<set>/Tests` folders holding
+  `-hires` images with no `-adetailer`/`-edited` successor, listed as checkboxes
+  ("Commission 137 - M, Fluorite  (7 to do)").
+- **📥 Load Selected Folders** drops the pending images into the tab through the
+  normal file-input path — gallery, per-image configs and prompts work as usual —
+  and ticks the new **Save next to each source image** checkbox. With it on, each
+  result saves as `<stem>-adetailer.png` into its own source folder (png and the
+  `-adetailer` suffix forced: that naming is what the pending scan and the content
+  manager key on; a custom suffix would reprocess everything forever). The list
+  rescans itself after each batch run.
+- **Cancel mid-image no longer saves the partial result** (same fix as
+  batch-hires-fix v0.5.0): an interrupted inpaint returns a partial image; saving
+  it would look finished — and with save-to-source, permanently hide the image
+  from the pending scan.
+- `test_scan.py`: standalone self-check for the scan logic (Forge modules stubbed).
+
+## 2026-07-22 — Big preview + suffix filter on the drop zone (v0.4)
+
+- **Large preview of the selected image.** New `gr.Image` at the top of the right
+  column, directly under the drop zone (640px tall) — updated on file drop (first
+  image), thumbnail click, and right-click. The thumbnail gallery now sits *below*
+  it as a strip (starting height 200px, still drag-resizable); the preview is where
+  you actually look at the image you're configuring.
+- **Suffix filter on the drop zone** (default `-hires`, empty = load everything). Drag a
+  whole folder's worth of files in and only the ones whose filename stem ends with the
+  suffix are loaded; the rest are skipped and counted in the editing label. The filtered
+  list is written back into the file box so it matches what loaded — guarded with a bare
+  `gr.update()` when nothing was skipped, since this runs inside the file box's own
+  `.change` handler and an unconditional write would retrigger it forever (the one
+  retrigger after a filtering pass filters nothing, and stops).
+
 ## 2026-07-14 — Run one image (v0.3.3)
 
 **▶️ Run this image** next to Run Batch: re-runs only the selected thumbnail, for when a

@@ -69,6 +69,13 @@ part that's meant to differ per image. Every image keeps its own.
   (e.g. `mypic-adetailer.png`) flat in the output folder (optional, on by default)
 - **Roomy layout** — the drop zone spans the top, and the thumbnail gallery has a
   drag handle in its bottom-right corner for when four at a time isn't enough
+- **Big preview** — the selected image shows large under the gallery, so you can
+  see what you're configuring without opening it elsewhere
+- **Suffix filter on the drop zone** — drag in a whole folder's worth of files and
+  only the ones ending in the suffix (default `-hires`) load; the rest are skipped
+- **Test-folder mode** — scans your work directories for `<set>/Tests` folders
+  with `-hires` images that have no `-adetailer` version yet, loads them with one
+  click, and saves each result back next to its own source image
 - **Live progress** — the log fills in as each image finishes; the Cancel button
   aborts the image being worked on and stops the batch
 - **Readable errors** — failures show the full traceback in the status log and
@@ -98,11 +105,28 @@ No extra dependencies are required.
 
 > **Note:** the number of slots is capped by **Settings → ADetailer → Max models**.
 
+### Test-folder mode
+
+The **📁 Test Folders** panel at the top scans the roots configured in Settings
+for `<set>/Tests` folders (e.g. `Commissions/Commission 137/Tests`). A set is
+listed while its Tests folder has `-hires` images with no `-adetailer` or
+`-edited` variant next to them.
+
+Tick the sets you want and click **📥 Load Selected Folders** — the pending
+images land in the tab like a normal drop, so you still configure prompts per
+image before running. Loading also ticks **Save next to each source image**:
+with it on, every result saves as `<name>-adetailer.png` into the same folder
+its source came from (always png, suffix and output-dir settings ignored),
+which is what the pending scan keys on — so re-running only ever does new work,
+and the list rescans itself after each batch.
+
 ## Settings
 
 Under **Settings → Batch ADetailer**:
 
 - **Output Directory** — custom save location (empty = default img2img output dir)
+- **Test-folder scan roots** — semicolon-separated directories scanned for
+  `<set>/Tests` folders by the Test Folders panel
 - **Max Images per Batch** — safety limit (default 50)
 - **Skip Failed Images and Continue** — keep going when one image fails (default on)
 - **Repair Unresolvable LoRA Names in Prompts** — re-point a renamed/epoch LoRA
