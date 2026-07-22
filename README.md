@@ -78,9 +78,9 @@ part that's meant to differ per image. Every image keeps its own.
   the slot prompt boxes out of the box (they expose the same id prefixes it
   already targets for ADetailer's own boxes)
 - **Suffix filter on the drop zone** — drag in a whole folder's worth of files and
-  only the ones ending in the suffix (default `-hires`) load; the rest are skipped
+  only the ones ending in the suffix load; the rest are skipped (empty = load all)
 - **Test-folder mode** — scans your work directories for `<set>/Tests` folders
-  with `-hires` images that have no `-adetailer` version yet, loads them with one
+  with base images that have no `-adetailer` version yet, loads them with one
   click, and saves each result back next to its own source image
 - **Live progress** — the log fills in as each image finishes; the Cancel button
   aborts the image being worked on and stops the batch
@@ -113,18 +113,27 @@ No extra dependencies are required.
 
 ### Test-folder mode
 
+ADetailer runs **first** in the refine chain:
+
+```
+1r1.png  ->  1r1-adetailer.png  ->  1r1-adetailer-base.png + 1r1-adetailer-hires.png
+```
+
 The **📁 Test Folders** panel at the top scans the roots configured in Settings
 for `<set>/Tests` folders (e.g. `Commissions/Commission 137/Tests`). A set is
-listed while its Tests folder has `-hires` images with no `-adetailer` or
-`-edited` variant next to them.
+listed while its Tests folder has base images (like `3r1.png`) with no
+`-adetailer` version next to them. Bases that already have a plain `-hires`
+sibling went through the old hires-first chain and are left alone; compositional
+edits should be saved as new revisions (`1r2.png`), not suffixes.
 
 Tick the sets you want and click **📥 Load Selected Folders** — the pending
 images land in the tab like a normal drop, so you still configure prompts per
-image before running. Loading also ticks **Save next to each source image**:
-with it on, every result saves as `<name>-adetailer.png` into the same folder
-its source came from (always png, suffix and output-dir settings ignored),
-which is what the pending scan keys on — so re-running only ever does new work,
-and the list rescans itself after each batch.
+image before running. Loading also ticks the save-into-source checkbox: with it
+on, every result saves as `<name>-adetailer.png` into the same folder its
+source came from (always png, suffix and output-dir settings ignored), which is
+what the pending scan keys on — so re-running only ever does new work, and the
+list rescans itself after each batch. The saved metadata keeps the source's
+real steps/size/sampler, so the hires-fix stage inherits true parameters.
 
 ## Settings
 

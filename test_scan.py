@@ -21,22 +21,22 @@ def touch(*parts):
 
 with tempfile.TemporaryDirectory() as root:
     tests = os.path.join(root, "Commission 1 - A", "Tests")
-    touch(tests, "1r1.png"); touch(tests, "1r1-hires.png")     # pending
-    touch(tests, "2r1.png"); touch(tests, "2r1-hires.png")
-    touch(tests, "2r1-hires-adetailer.png")                    # detailed -> done
-    touch(tests, "3r1.png"); touch(tests, "3r1-hires.png")
-    touch(tests, "3r1-hires-edited.png")                       # edited past -> done
-    touch(tests, "4r1.png")                                    # base only -> not ready yet
-    touch(tests, "10r1.png"); touch(tests, "10r1-hires.jpg")   # pending; after 1r1, natural order
-    touch(tests, "1r1-hires-1.png")                            # collision copy -> ignored
-    touch(tests, "notes.txt")                                  # not an image -> ignored
-    pending = [os.path.basename(p) for p in bad._pending_hires(tests)]
-    assert pending == ["1r1-hires.png", "10r1-hires.jpg"], pending
+    touch(tests, "1r1.png")                                     # pending base
+    touch(tests, "2r1.png"); touch(tests, "2r1-adetailer.png")  # detailed -> done
+    touch(tests, "3r1.png"); touch(tests, "3r1-adetailer.png")
+    touch(tests, "3r1-adetailer-base.png")                      # later-stage outputs -> not bases
+    touch(tests, "3r1-adetailer-hires.png")
+    touch(tests, "4r1.png"); touch(tests, "4r1-hires.png")      # old hires-first chain -> left alone
+    touch(tests, "10r1.png")                                    # pending; after 1r1, natural order
+    touch(tests, "2r1-adetailer-1.png")                         # collision copy -> ignored
+    touch(tests, "notes.txt")                                   # not an image -> ignored
+    pending = [os.path.basename(p) for p in bad._pending_bases(tests)]
+    assert pending == ["1r1.png", "10r1.png"], pending
 
-    touch(root, "Commission 2 - B", "Tests", "1r1-hires.png")  # 1 pending
+    touch(root, "Commission 2 - B", "Tests", "1r1.png")         # 1 pending
     done = os.path.join(root, "Commission 3 - C", "Tests")
-    touch(done, "1r1-hires.png"); touch(done, "1r1-hires-adetailer.png")  # done -> hidden
-    touch(root, "Commission 4 - D", "readme.txt")              # no Tests dir -> hidden
+    touch(done, "1r1.png"); touch(done, "1r1-adetailer.png")    # done -> hidden
+    touch(root, "Commission 4 - D", "readme.txt")               # no Tests dir -> hidden
 
     bad.shared.opts.batch_adetailer_scan_roots = root + ";" + os.path.join(root, "missing")
     choices = bad._scan_test_folders()

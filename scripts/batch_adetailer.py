@@ -120,21 +120,23 @@ def _register_settings():
 # Test-folder scanning
 #
 # Commission/request sets keep work-in-progress test images in a Tests/
-# subfolder: NrM.png bases with their hires-fixed variants next to them as
-# NrM-hires.png — which are what ADetailer runs on. A -hires image is
-# "pending" while it has no -adetailer (or -edited) successor.
+# subfolder. ADetailer runs FIRST in the refine chain:
+#   NrM.png -> NrM-adetailer.png -> NrM-adetailer-base.png / NrM-adetailer-hires.png
+# A base image is "pending" while it has no -adetailer successor. Bases with a
+# plain -hires sibling went through the old (hires-first) chain and are left
+# alone. Compositional edits are new revisions (1r2), never suffixes.
 # ──────────────────────────────────────────────
 _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".jxl", ".avif", ".heif")
-_DONE_TOKENS = ("-adetailer", "-edited")
+_VARIANT_TOKENS = ("-adetailer", "-hires", "-edited", "-base")
 
 
 def _natural_key(name):
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", name)]
 
 
-def _pending_hires(folder):
-    """Full paths of -hires images in `folder` that have no -adetailer/-edited
-    successor, in natural order (2r1-hires before 10r1-hires)."""
+def _pending_bases(folder):
+    """Full paths of base images in `folder` that have no -adetailer result
+    yet, in natural order (2r1 before 10r1)."""
     try:
         files = sorted(os.listdir(folder), key=_natural_key)
     except OSError:
@@ -146,17 +148,19 @@ def _pending_hires(folder):
     out = []
     for f in image_files:
         stem = os.path.splitext(f)[0]
-        if not stem.endswith("-hires"):
-            continue  # bases, -adetailer/-edited outputs, collision copies
-        if any(f"{stem}{tok}" in stems for tok in _DONE_TOKENS):
-            continue  # already detailed (or hand-edited past this stage)
+        if any(tok in stem.lower() for tok in _VARIANT_TOKENS):
+            continue  # pipeline outputs and their collision copies, not bases
+        if f"{stem}-adetailer" in stems:
+            continue  # already detailed
+        if f"{stem}-hires" in stems:
+            continue  # old hires-first chain already handled this base
         out.append(os.path.join(folder, f))
     return out
 
 
 def _scan_test_folders():
     """[(label, tests_dir_path)] for every <root>/<set>/Tests that still has
-    pending -hires images. Roots come from the scan-roots setting."""
+    pending base images. Roots come from the scan-roots setting."""
     roots = getattr(shared.opts, "batch_adetailer_scan_roots", "") or ""
     choices = []
     for root in (r.strip() for r in roots.split(";")):
@@ -165,7 +169,7 @@ def _scan_test_folders():
         for name in sorted(os.listdir(root), key=_natural_key):
             tdir = os.path.join(root, name, "Tests")  # also matches "tests": NTFS is case-insensitive
             if os.path.isdir(tdir):
-                n = len(_pending_hires(tdir))
+                n = len(_pending_bases(tdir))
                 if n:
                     choices.append((f"{name}  ({n} to do)", tdir))
     return choices
@@ -566,11 +570,14 @@ def _apply_source_image_parameters(p, geninfo: str):
 # ──────────────────────────────────────────────
 # Saving with the original filename + suffix
 # ──────────────────────────────────────────────
-def _fix_infotext(infotext: str | None, width: int, height: int, steps: int | None):
+def _fix_infotext(infotext: str | None, width: int, height: int, steps: int | None,
+                  sampler: str | None = None):
     """
     Undo the cosmetic damage skip-img2img does to the saved infotext: the base
-    pass is neutered to 1 step at 128x128 *before* create_infotext runs, so the
-    result would advertise "Steps: 1, Size: 128x128" for a full-res image.
+    pass is neutered to 1 step, Euler, 128x128 *before* create_infotext runs,
+    so the result would advertise those for a full-res image. Downstream tools
+    (batch-hires-fix) inherit per-image params from this infotext, so it must
+    tell the truth.
     """
     if not infotext:
         return infotext
@@ -578,10 +585,13 @@ def _fix_infotext(infotext: str | None, width: int, height: int, steps: int | No
     infotext = re.sub(r"(?<=\bSize: )128x128\b", f"{width}x{height}", infotext)
     if steps:
         infotext = re.sub(r"(?<=\bSteps: )1(?=,|$)", str(steps), infotext)
+    if sampler and sampler != "Euler":
+        infotext = re.sub(r"(?<=\bSampler: )Euler(?=,|$)", sampler, infotext)
     return infotext
 
 
-def _save_with_original_name(processed, p, save_opts: dict, orig_size, orig_steps):
+def _save_with_original_name(processed, p, save_opts: dict, orig_size, orig_steps,
+                             orig_sampler=None):
     """
     Save result images as <original filename><suffix>.<ext> directly in the
     output directory (no dated subfolders, no [seed]-[prompt] naming pattern).
@@ -601,7 +611,7 @@ def _save_with_original_name(processed, p, save_opts: dict, orig_size, orig_step
             n += 1
 
         infotext = processed.infotexts[i] if i < len(processed.infotexts) else None
-        infotext = _fix_infotext(infotext, orig_size[0], orig_size[1], orig_steps)
+        infotext = _fix_infotext(infotext, orig_size[0], orig_size[1], orig_steps, orig_sampler)
 
         images.save_image(
             image, outdir, "",
@@ -709,9 +719,11 @@ def _process_single_image(img: Image.Image, geninfo: str | None, unit_dicts: lis
             print(f"[Batch ADetailer] {note}")
 
         # Captured before process_images(), because ADetailer's process() hook
-        # overwrites p.steps/width/height with its 1-step/128x128 stand-ins.
+        # overwrites p.steps/width/height/sampler with its 1-step/Euler/128x128
+        # stand-ins.
         orig_size = (p.width, p.height)
         orig_steps = p.steps
+        orig_sampler = p.sampler_name
 
         if save_opts.get("use_original_name"):
             # We save manually afterwards with the original filename + suffix.
@@ -731,7 +743,7 @@ def _process_single_image(img: Image.Image, geninfo: str | None, unit_dicts: lis
             return [], [], None, notes
 
         if save_opts.get("use_original_name"):
-            _save_with_original_name(processed, p, save_opts, orig_size, orig_steps)
+            _save_with_original_name(processed, p, save_opts, orig_size, orig_steps, orig_sampler)
 
         return processed.images, processed.infotexts, None, notes
     except Exception:
@@ -1290,10 +1302,10 @@ def _build_ui_tab():
         rclick_index = gr.Textbox(visible=False, elem_id="batch_adetailer_rclick")
         rclick_btn = gr.Button(visible=False, elem_id="batch_adetailer_rclick_btn")
 
-        with gr.Accordion("📁 Test Folders — load pending -hires images", open=True):
+        with gr.Accordion("📁 Test Folders — load pending base images", open=True):
             folder_select = gr.CheckboxGroup(
                 choices=_scan_test_folders(),
-                label="Sets with -hires images that have no -adetailer version yet",
+                label="Sets with base images that have no -adetailer version yet",
             )
             with gr.Row():
                 load_btn = gr.Button("📥 Load Selected Folders", variant="primary", scale=3)
@@ -1311,7 +1323,7 @@ def _build_ui_tab():
                 scale=4,
             )
             suffix_filter = gr.Textbox(
-                value="-hires",
+                value="",
                 label="Only load files ending with",
                 info="Drag a whole folder's worth in — anything else is skipped. Empty = load everything.",
                 max_lines=1,
@@ -1364,8 +1376,7 @@ def _build_ui_tab():
                 # Ticked automatically by "Load Selected Folders".
                 save_to_source = gr.Checkbox(
                     value=False,
-                    label="Save next to each source image (as <name>-adetailer.png, "
-                          "ignoring the output dir and suffix above)",
+                    label="Save as <name>-adetailer.png into each image's own folder",
                 )
 
                 with gr.Row():
@@ -1469,17 +1480,17 @@ def _build_ui_tab():
         )
 
         def _load_folders(folders, store):
-            """Pending -hires images of the ticked sets, loaded directly — NOT
+            """Pending base images of the ticked sets, loaded directly — NOT
             through the drop zone: gradio copies every value that round-trips a
             gr.File into its temp cache, and save-to-source derives the output
             folder from each path, so the paths must stay the originals for
             results to land back in the Tests folders. Also ticks
             save-to-source."""
-            files = [f for folder in (folders or []) for f in _pending_hires(folder)]
+            files = [f for folder in (folders or []) for f in _pending_bases(folder)]
             if not files:
                 noop = [gr.update()] * (6 + num_slots * CONTROLS_PER_SLOT)
                 return [*noop, gr.update(), (
-                    "No pending -hires images — tick at least one set "
+                    "No pending base images — tick at least one set "
                     "(🔄 Rescan if the list is stale)."
                 )]
             return [*_load_paths(files, store, num_slots), gr.update(value=True), (

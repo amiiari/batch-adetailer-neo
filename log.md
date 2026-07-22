@@ -1,5 +1,26 @@
 # Change Log
 
+## 2026-07-22 — ADetailer moves to the front of the chain (v0.6)
+
+The refine pipeline is now adetailer-first:
+`1r1.png -> 1r1-adetailer.png -> 1r1-adetailer-base.png + 1r1-adetailer-hires.png`
+(faces are repaired at base resolution — where ADetailer actually pays off —
+and the hires pass afterwards re-sharpens its output in the artist's style).
+
+- **Folder scan flipped**: `_pending_hires` → `_pending_bases`. A set is listed
+  while it has base images (no variant suffix) without a `-adetailer` sibling.
+  Bases with a plain `-hires` sibling are old-chain work and stay hidden, so
+  released sets don't flood the list. Compositional edits are new revisions
+  (1r2), never suffixes.
+- **Infotext sampler repair**: skip-img2img also stamps `Sampler: Euler` into
+  the saved infotext (on top of the 1-step/128x128 damage `_fix_infotext`
+  already undid). Now repaired from the captured original — batch-hires-fix
+  inherits per-image params from this infotext, so it must tell the truth.
+- Drop-zone suffix filter default `-hires` → empty (inputs are plain bases now).
+- The save-to-source checkbox label was vague; now:
+  "Save as <name>-adetailer.png into each image's own folder".
+- `test_scan.py` updated to the new rules.
+
 ## 2026-07-22 — Folder mode saves into the real source folders (v0.5.6)
 
 - **Bug**: with save-to-source on, folder-loaded batches saved their -adetailer
