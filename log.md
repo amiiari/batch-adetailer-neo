@@ -1,5 +1,16 @@
 # Change Log
 
+## 2026-07-22 — Tag autocomplete in the prompt boxes (v0.5.4)
+
+- The slot prompt/negative boxes now carry elem_ids with the real ADetailer's
+  img2img prefixes (`script_img2img_adetailer_ad_prompt_batch_slot1`, ...).
+  sd-webui-tagcomplete targets ADetailer boxes with the prefix selectors
+  `[id^=script_img2img_adetailer_ad_prompt] textarea` /
+  `[id^=..._ad_negative_prompt] textarea` (_textAreas.js, hasIds entries are
+  global queries), so matching the prefix lights up autocomplete here with zero
+  tagcomplete configuration — and tag insertion dispatches a normal `input`
+  event, so the per-image config store picks the text up like typed input.
+
 ## 2026-07-22 — Preview in the editor column, whole image always visible (v0.5.3)
 
 - **The preview moved to the left column**, above the "Editing:" label — it sits

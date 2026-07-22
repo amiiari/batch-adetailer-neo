@@ -1165,8 +1165,15 @@ def _slot_controls(slot_index, num_slots):
     )
 
     # lines = rows shown at rest; the box grows with the text up to max_lines.
+    #
+    # The elem_ids deliberately carry the real ADetailer's img2img prefixes:
+    # tag autocomplete (sd-webui-tagcomplete) finds its third-party targets via
+    # `[id^=script_img2img_adetailer_ad_prompt] textarea` (and the negative
+    # twin), so matching the prefix gets autocomplete in these boxes with no
+    # tagcomplete configuration. The _batch_slot suffix keeps them unique.
     prompt = gr.Textbox(
         label="ADetailer prompt",
+        elem_id=f"script_img2img_adetailer_ad_prompt_batch_slot{slot_index + 1}",
         placeholder=(
             "Empty = reuse this image's own prompt from its metadata. "
             "Or write [PROMPT] to build on it: '[PROMPT], detailed eyes'"
@@ -1176,6 +1183,7 @@ def _slot_controls(slot_index, num_slots):
     )
     negative_prompt = gr.Textbox(
         label="ADetailer negative prompt",
+        elem_id=f"script_img2img_adetailer_ad_negative_prompt_batch_slot{slot_index + 1}",
         placeholder="Empty = reuse this image's own negative prompt ([PROMPT] works here too)",
         lines=5,
         max_lines=20,

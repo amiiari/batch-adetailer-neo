@@ -74,6 +74,9 @@ part that's meant to differ per image. Every image keeps its own.
   configuring; drag the box's bottom-right corner to size it
 - **Arrow-key navigation** — ←/→ steps through the thumbnails (whenever you're
   not typing in a box), no clicking each one
+- **Tag autocomplete support** — if you use sd-webui-tagcomplete, it works in
+  the slot prompt boxes out of the box (they expose the same id prefixes it
+  already targets for ADetailer's own boxes)
 - **Suffix filter on the drop zone** — drag in a whole folder's worth of files and
   only the ones ending in the suffix (default `-hires`) load; the rest are skipped
 - **Test-folder mode** — scans your work directories for `<set>/Tests` folders
