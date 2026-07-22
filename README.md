@@ -69,8 +69,11 @@ part that's meant to differ per image. Every image keeps its own.
   (e.g. `mypic-adetailer.png`) flat in the output folder (optional, on by default)
 - **Roomy layout** — the drop zone spans the top, and the thumbnail gallery has a
   drag handle in its bottom-right corner for when four at a time isn't enough
-- **Big preview** — the selected image shows large under the gallery, so you can
-  see what you're configuring without opening it elsewhere
+- **Big preview** — the selected image shows large under the drop zone, so you
+  can see what you're configuring without opening it elsewhere; drag its
+  bottom-right corner to make it smaller or bigger
+- **Arrow-key navigation** — ←/→ steps through the thumbnails (whenever you're
+  not typing in a box), no clicking each one
 - **Suffix filter on the drop zone** — drag in a whole folder's worth of files and
   only the ones ending in the suffix (default `-hires`) load; the rest are skipped
 - **Test-folder mode** — scans your work directories for `<set>/Tests` folders

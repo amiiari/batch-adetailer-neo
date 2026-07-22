@@ -1,5 +1,19 @@
 # Change Log
 
+## 2026-07-22 — Resizable preview + arrow-key navigation (v0.5.1)
+
+- **The big preview is drag-resizable** like the thumbnail gallery: same
+  `resize: vertical` CSS trick, starting at the old 640px (min 240px). The
+  gradio `height=` pin is gone; the image scales to whatever height the drag
+  gives it (`object-fit: contain` was already there).
+- **←/→ steps through the thumbnails.** The keydown handler just clicks the
+  selected thumbnail's neighbour, so gradio's own select event does everything a
+  real click would (slots, preview, editing label). Inactive while the target is
+  an input/textarea/select/contenteditable (prompt boxes and sliders keep their
+  arrows), when the tab isn't on screen, and at either end of the strip. The
+  listener sits on `document` (guarded separately from the gallery's, which is
+  re-attached per Reload UI since the gallery element is replaced).
+
 ## 2026-07-22 — Test-Folder Mode: ADetailer In Place (v0.5)
 
 - **New 📁 Test Folders panel**: scans configurable roots (Settings → "Test-folder

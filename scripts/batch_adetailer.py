@@ -1211,7 +1211,8 @@ def _build_ui_tab():
             "Slot order is the order the units run in.\n\n"
             "*Right-click a thumbnail to drop `[PROMPT]` into Slot 1's prompt — it stands "
             "for that image's own prompt, so leaving it alone inherits, and anything you add "
-            "around it is appended.*"
+            "around it is appended. ←/→ steps through the thumbnails (when you're not "
+            "typing in a box).*"
         )
 
         gr.HTML(
@@ -1243,6 +1244,26 @@ def _build_ui_tab():
             }
             /* The drop zone's file list grows with every image dropped. */
             #batch_adetailer_files { max-height: 220px; overflow-y: auto; }
+            /* The big preview resizes the same way as the gallery: drag its
+               bottom-right corner. The inner image already scales to the
+               block's height (object-fit: contain). */
+            #batch_adetailer_preview {
+                height: 640px;
+                min-height: 240px;
+                resize: vertical;
+                overflow: hidden;
+                display: flex;
+                flex-direction: column;
+            }
+            #batch_adetailer_preview .image-container {
+                flex: 1 1 auto;
+                min-height: 0;
+                height: auto !important;
+            }
+            #batch_adetailer_preview .image-container img {
+                height: 100%;
+                object-fit: contain;
+            }
             </style>
             """
         )
@@ -1337,11 +1358,13 @@ def _build_ui_tab():
             # Sits directly under the drop zone: preview of the selected image
             # first, the thumbnail strip below it, log last.
             with gr.Column(scale=2):
+                # No `height`: the CSS above gives the block a starting height
+                # and a drag handle (same trick as the gallery below), and the
+                # image scales to whatever height the drag gives it.
                 preview_img = gr.Image(
                     label="Selected image",
                     elem_id="batch_adetailer_preview",
                     interactive=False,
-                    height=640,
                     show_download_button=False,
                 )
 
@@ -1352,7 +1375,7 @@ def _build_ui_tab():
                 # allow_preview=False keeps a click on a thumbnail a *selection*
                 # instead of popping open the full-size viewer.
                 source_gallery = gr.Gallery(
-                    label="Images — click to edit its units, right-click for Slot 1's [PROMPT]",
+                    label="Images — click or ←/→ to step through, right-click for Slot 1's [PROMPT]",
                     # Deliberately NOT suffixed "_gallery": that suffix is what makes
                     # Forge's imageviewer.js attach its lightbox, which we don't want
                     # on the source thumbnails.

@@ -5,6 +5,10 @@
 // Gradio has no contextmenu event, so this is the usual Forge dance: stash the
 // clicked index in a hidden textbox, dispatch `input` so gradio's frontend picks
 // the value up, then click a hidden button whose python handler does the work.
+//
+// Also: ←/→ steps through the thumbnails without clicking each one — it just
+// clicks the neighbour of the selected one, so gradio's own select event does
+// everything a real click would.
 (function () {
     "use strict";
 
@@ -36,7 +40,49 @@
         setTimeout(() => button.click(), 30);
     }
 
+    function onArrowKey(event) {
+        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+            return;
+        }
+        if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+            return;
+        }
+        // Leave the arrows alone while typing/adjusting: prompt boxes, sliders,
+        // dropdowns and the like all use them for their own cursor.
+        const t = event.target;
+        if (t && t.closest && t.closest("input, textarea, select, [contenteditable='true']")) {
+            return;
+        }
+
+        const gallery = gradioApp().querySelector(`#${GALLERY_ID}`);
+        if (!gallery || gallery.offsetParent === null) {
+            return;  // Batch ADetailer tab isn't on screen
+        }
+
+        const thumbs = Array.from(gallery.querySelectorAll(".thumbnail-item"));
+        if (!thumbs.length) {
+            return;
+        }
+
+        const current = thumbs.findIndex((el) => el.classList.contains("selected"));
+        const next = current < 0 ? 0 : current + (event.key === "ArrowRight" ? 1 : -1);
+        if (next < 0 || next >= thumbs.length) {
+            return;  // already at either end
+        }
+
+        event.preventDefault();
+        thumbs[next].click();
+        thumbs[next].scrollIntoView({ block: "nearest" });
+    }
+
     onUiLoaded(function () {
+        // The document survives a Reload UI, the gallery element does not —
+        // hence one guard per listener.
+        if (!document.body.dataset.badArrowNav) {
+            document.body.dataset.badArrowNav = "1";
+            document.addEventListener("keydown", onArrowKey);
+        }
+
         const gallery = gradioApp().querySelector(`#${GALLERY_ID}`);
         if (!gallery || gallery.dataset.badRightClick) {
             return;
