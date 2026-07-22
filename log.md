@@ -1,5 +1,14 @@
 # Change Log
 
+## 2026-07-22 — Preview shows the image at full width (v0.5.2)
+
+- The preview no longer letterboxes the image into the box (`object-fit:
+  contain` made the resize drag just rescale it). The image now renders at
+  full column width in its natural aspect, the box scrolls vertically for
+  whatever doesn't fit, and the drag handle sizes the *viewport*, not the
+  image. Gradio's own `img { height: 100%; object-fit: contain }` rule is
+  out-specificity'd via the elem_id.
+
 ## 2026-07-22 — Resizable preview + arrow-key navigation (v0.5.1)
 
 - **The big preview is drag-resizable** like the thumbnail gallery: same

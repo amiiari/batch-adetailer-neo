@@ -1244,9 +1244,11 @@ def _build_ui_tab():
             }
             /* The drop zone's file list grows with every image dropped. */
             #batch_adetailer_files { max-height: 220px; overflow-y: auto; }
-            /* The big preview resizes the same way as the gallery: drag its
-               bottom-right corner. The inner image already scales to the
-               block's height (object-fit: contain). */
+            /* The big preview: the image renders at full column width in its
+               natural aspect — never letterboxed down to fit the box — and the
+               box scrolls for whatever doesn't fit. Dragging the bottom-right
+               corner (same trick as the gallery) changes how much height the
+               viewport takes, not the image's scale. */
             #batch_adetailer_preview {
                 height: 640px;
                 min-height: 240px;
@@ -1259,10 +1261,17 @@ def _build_ui_tab():
                 flex: 1 1 auto;
                 min-height: 0;
                 height: auto !important;
+                overflow-y: auto;
+            }
+            #batch_adetailer_preview .image-container button {
+                width: 100%;
+                height: auto;
             }
             #batch_adetailer_preview .image-container img {
-                height: 100%;
-                object-fit: contain;
+                width: 100%;
+                height: auto;
+                max-height: none !important;
+                object-fit: unset;
             }
             </style>
             """
