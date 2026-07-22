@@ -1,5 +1,19 @@
 # Change Log
 
+## 2026-07-22 — Preview in the editor column, whole image always visible (v0.5.3)
+
+- **The preview moved to the left column**, above the "Editing:" label — it sits
+  with the controls it belongs to, and the right column is just thumbnails + log.
+  It starts at 400px (narrow column — it doesn't need to be big, it needs to show
+  what's being configured) and keeps the drag handle.
+- **The whole image is now always visible**, scaled to fit however small the box
+  is dragged. The v0.5.1/0.5.2 attempts sized the image off `.image-container`,
+  whose height comes from an intermediate wrapper — so the image rendered at its
+  natural height and got cropped by the box's `overflow: hidden` (what looked like
+  "not fully shown"). The container is now pinned to the box's bounds
+  (`position: absolute; inset: 0`), taking every wrapper out of the height chain,
+  with `object-fit: contain` on the image.
+
 ## 2026-07-22 — Preview shows the image at full width (v0.5.2)
 
 - The preview no longer letterboxes the image into the box (`object-fit:

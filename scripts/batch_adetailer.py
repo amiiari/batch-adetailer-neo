@@ -1244,34 +1244,29 @@ def _build_ui_tab():
             }
             /* The drop zone's file list grows with every image dropped. */
             #batch_adetailer_files { max-height: 220px; overflow-y: auto; }
-            /* The big preview: the image renders at full column width in its
-               natural aspect — never letterboxed down to fit the box — and the
-               box scrolls for whatever doesn't fit. Dragging the bottom-right
-               corner (same trick as the gallery) changes how much height the
-               viewport takes, not the image's scale. */
+            /* The preview: the WHOLE image is always visible, scaled to fit
+               the box, however small the box is dragged. The container is
+               pinned to the box's bounds (absolute inset) so no intermediate
+               wrapper can size itself to the image's natural height and crop
+               it against overflow:hidden. */
             #batch_adetailer_preview {
-                height: 640px;
-                min-height: 240px;
+                height: 400px;
+                min-height: 160px;
                 resize: vertical;
                 overflow: hidden;
-                display: flex;
-                flex-direction: column;
+                position: relative;
             }
             #batch_adetailer_preview .image-container {
-                flex: 1 1 auto;
-                min-height: 0;
+                position: absolute;
+                inset: 0;
                 height: auto !important;
-                overflow-y: auto;
             }
-            #batch_adetailer_preview .image-container button {
-                width: 100%;
-                height: auto;
-            }
+            #batch_adetailer_preview .image-container button,
             #batch_adetailer_preview .image-container img {
                 width: 100%;
-                height: auto;
+                height: 100%;
                 max-height: none !important;
-                object-fit: unset;
+                object-fit: contain;
             }
             </style>
             """
@@ -1318,6 +1313,17 @@ def _build_ui_tab():
         with gr.Row():
             # ── Left column: per-image unit editor ──
             with gr.Column(scale=1):
+                # The image being edited, whole and scaled to fit — it doesn't
+                # need to be big, it needs to show what's being configured.
+                # No `height`: the CSS above sizes the box and gives it a
+                # drag handle.
+                preview_img = gr.Image(
+                    label="Selected image",
+                    elem_id="batch_adetailer_preview",
+                    interactive=False,
+                    show_download_button=False,
+                )
+
                 editing_md = gr.Markdown(_editing_label([], None))
 
                 slot_controls: list = []
@@ -1363,20 +1369,8 @@ def _build_ui_tab():
                     )
                     cancel_btn = gr.Button("⏹️ Cancel", variant="stop", size="lg", scale=1)
 
-            # ── Right column: the images ──
-            # Sits directly under the drop zone: preview of the selected image
-            # first, the thumbnail strip below it, log last.
+            # ── Right column: the thumbnail strip and the log ──
             with gr.Column(scale=2):
-                # No `height`: the CSS above gives the block a starting height
-                # and a drag handle (same trick as the gallery below), and the
-                # image scales to whatever height the drag gives it.
-                preview_img = gr.Image(
-                    label="Selected image",
-                    elem_id="batch_adetailer_preview",
-                    interactive=False,
-                    show_download_button=False,
-                )
-
                 # No `height`: the CSS below gives the block a starting height and a
                 # drag handle, and the thumbnails scroll inside it. A gradio `height`
                 # would pin the inner grid and fight the resize.
