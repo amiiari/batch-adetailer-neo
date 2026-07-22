@@ -133,7 +133,6 @@ Under **Settings → Batch ADetailer**:
 - **Output Directory** — custom save location (empty = default img2img output dir)
 - **Test-folder scan roots** — semicolon-separated directories scanned for
   `<set>/Tests` folders by the Test Folders panel
-- **Max Images per Batch** — safety limit (default 50)
 - **Skip Failed Images and Continue** — keep going when one image fails (default on)
 - **Repair Unresolvable LoRA Names in Prompts** — re-point a renamed/epoch LoRA
   name at the matching file in your Lora folder (default on)

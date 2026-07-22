@@ -98,13 +98,6 @@ def _register_settings():
     )
 
     shared.opts.add_option(
-        "batch_adetailer_max_images",
-        shared.OptionInfo(50, "Max Images per Batch", gr.Slider,
-                          {"minimum": 1, "maximum": 500, "step": 1}, section=section)
-        .info("Maximum number of images that can be processed in one batch."),
-    )
-
-    shared.opts.add_option(
         "batch_adetailer_skip_errors",
         shared.OptionInfo(True, "Skip Failed Images and Continue", gr.Checkbox,
                           {}, section=section)
@@ -795,12 +788,7 @@ def batch_adetailer_process(store, paths, sel, use_original_name, filename_suffi
         )
         return
 
-    max_images = shared.opts.batch_adetailer_max_images
     skip_errors = shared.opts.batch_adetailer_skip_errors
-
-    if len(paths) > max_images:
-        yield f"Too many images ({len(paths)}). Max is {max_images}."
-        return
 
     # Snapshot the store: the running generator holds the gr.State by reference,
     # and a stray .change event could otherwise mutate it mid-run.

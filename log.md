@@ -1,5 +1,12 @@
 # Change Log
 
+## 2026-07-22 — Batch size limit removed again (v0.5.5)
+
+- The 50-image "Max Images per Batch" limit is gone (it had been removed once,
+  then crept back in with the v0.4 work): setting, check, and README mention.
+  Folder loads routinely exceed 50 and the batch is sequential anyway — there's
+  nothing for a cap to protect.
+
 ## 2026-07-22 — Tag autocomplete in the prompt boxes (v0.5.4)
 
 - The slot prompt/negative boxes now carry elem_ids with the real ADetailer's
