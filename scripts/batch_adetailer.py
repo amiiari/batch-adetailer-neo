@@ -947,12 +947,53 @@ def _control_updates(config, num_slots, choices=None):
     return updates
 
 
+def _load_paths(paths, store, num_slots, skip_note=""):
+    """
+    Load a list of image paths into the tab: seed a config for each new image
+    from the user's saved ADetailer defaults, keep configs for images that were
+    already loaded, and show the first image's config. Returns updates for
+    [gallery, paths_state, store_state, sel_state, editing_md, *controls,
+    preview].
+    """
+    store = dict(store or {})
+    defaults = _get_adetailer_defaults()
+    choices = _preset_choices(defaults)
+
+    if not paths:
+        blank = _default_config(defaults, num_slots)
+        return [
+            gr.update(value=None),        # source gallery
+            [],                           # paths_state
+            {},                           # store_state
+            None,                         # sel_state
+            _editing_label([], None) + skip_note,
+            *_control_updates(blank, num_slots, choices),
+            gr.update(value=None),        # preview
+        ]
+
+    store = {
+        path: store.get(path) or _default_config(defaults, num_slots)
+        for path in paths
+    }
+
+    return [
+        gr.update(value=paths, selected_index=0),
+        paths,
+        store,
+        0,
+        _editing_label(paths, 0) + skip_note,
+        *_control_updates(store[paths[0]], num_slots, choices),
+        gr.update(value=paths[0]),
+    ]
+
+
 def _on_files(files, store, num_slots, suffix_filter):
     """
     Files dropped: keep only files whose stem ends with the suffix filter (so a
-    whole folder can be dragged in and only the `-hires` variants load), seed a
-    config for each new image from the user's saved ADetailer defaults, keep
-    configs for images that were already loaded, and show the first image's config.
+    whole folder can be dragged in and only the `-hires` variants load), then
+    load them. NOTE: these paths are gradio's temp-cache copies of the dropped
+    files, not the originals — fine for drag-drop (results go to the output
+    dir), and the reason folder mode does NOT route through this box.
     """
     paths = [f if isinstance(f, str) else getattr(f, "name", None) for f in (files or [])]
     paths = [p for p in paths if p]
@@ -974,38 +1015,9 @@ def _on_files(files, store, num_slots, suffix_filter):
         f"\n\n*Skipped {skipped} file(s) not ending in `{suffix}`.*" if skipped else ""
     )
 
-    store = dict(store or {})
-    defaults = _get_adetailer_defaults()
-    choices = _preset_choices(defaults)
-
-    if not paths:
-        blank = _default_config(defaults, num_slots)
-        return [
-            gr.update(value=None),        # source gallery
-            [],                           # paths_state
-            {},                           # store_state
-            None,                         # sel_state
-            _editing_label([], None) + skip_note,
-            *_control_updates(blank, num_slots, choices),
-            file_update,
-            gr.update(value=None),        # preview
-        ]
-
-    store = {
-        path: store.get(path) or _default_config(defaults, num_slots)
-        for path in paths
-    }
-
-    return [
-        gr.update(value=paths, selected_index=0),
-        paths,
-        store,
-        0,
-        _editing_label(paths, 0) + skip_note,
-        *_control_updates(store[paths[0]], num_slots, choices),
-        file_update,
-        gr.update(value=paths[0]),
-    ]
+    out = _load_paths(paths, store, num_slots, skip_note)
+    out.insert(len(out) - 1, file_update)  # the outputs list puts the drop zone before the preview
+    return out
 
 
 def _on_select_image(store, paths, num_slots, evt: gr.SelectData):
@@ -1456,25 +1468,30 @@ def _build_ui_tab():
             queue=False,
         )
 
-        def _load_folders(folders):
-            """Pending -hires images of the ticked sets -> the drop zone (whose
-            .change handler then builds the gallery and per-image configs), and
-            tick save-to-source so results land back next to their sources."""
+        def _load_folders(folders, store):
+            """Pending -hires images of the ticked sets, loaded directly — NOT
+            through the drop zone: gradio copies every value that round-trips a
+            gr.File into its temp cache, and save-to-source derives the output
+            folder from each path, so the paths must stay the originals for
+            results to land back in the Tests folders. Also ticks
+            save-to-source."""
             files = [f for folder in (folders or []) for f in _pending_hires(folder)]
             if not files:
-                return gr.update(), gr.update(), (
+                noop = [gr.update()] * (6 + num_slots * CONTROLS_PER_SLOT)
+                return [*noop, gr.update(), (
                     "No pending -hires images — tick at least one set "
                     "(🔄 Rescan if the list is stale)."
-                )
-            return gr.update(value=files), gr.update(value=True), (
+                )]
+            return [*_load_paths(files, store, num_slots), gr.update(value=True), (
                 f"Loaded {len(files)} image(s) from {len(folders or [])} folder(s) — "
                 "configure prompts, then 🚀 Run Batch ADetailer."
-            )
+            )]
 
         load_btn.click(
             fn=_load_folders,
-            inputs=[folder_select],
-            outputs=[file_input, save_to_source, status_text],
+            inputs=[folder_select, store_state],
+            outputs=[source_gallery, paths_state, store_state, sel_state, editing_md,
+                     *controls, preview_img, save_to_source, status_text],
             queue=False,
         )
 

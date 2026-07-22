@@ -1,5 +1,19 @@
 # Change Log
 
+## 2026-07-22 — Folder mode saves into the real source folders (v0.5.6)
+
+- **Bug**: with save-to-source on, folder-loaded batches saved their -adetailer
+  files into gradio's temp cache instead of the Tests folders. Loading routed
+  the paths through the drop zone, and every value that round-trips a gr.File
+  is copied into gradio's cache (blocks.py `move_resource_to_block_cache`) — so
+  "the folder the image came from" was the cache copy's folder.
+- **Fix**: 📥 Load Selected Folders now feeds the original paths straight into
+  the tab's state (`_load_paths`, the shared tail of the drop handler): gallery,
+  per-image configs, preview and prompts all work as before, but paths_state
+  holds the real files, so results land next to them. The drop zone is
+  deliberately left untouched (drag-drop keeps its cache-copy semantics and
+  output-dir saving).
+
 ## 2026-07-22 — Batch size limit removed again (v0.5.5)
 
 - The 50-image "Max Images per Batch" limit is gone (it had been removed once,
