@@ -50,11 +50,9 @@ CONTROLS_PER_SLOT = 1 + len(OVERRIDE_ATTRS)
 
 PRESET_DISABLED = -1
 
-# What right-click drops into a slot's prompt box: ADetailer's own placeholder for
-# "the image's prompt" (adetailer/scripts/!adetailer.py :: _get_prompt), used as-is.
-# _BASE_PROMPT_RE still rewrites the old "[base prompt]" spelling for backward compat
-# with prompts saved before v0.5.
-BASE_PROMPT_TOKEN = "[PROMPT]"
+# _BASE_PROMPT_RE rewrites the old "[base prompt]" spelling to ADetailer's own
+# "[PROMPT]" placeholder (adetailer/scripts/!adetailer.py :: _get_prompt) for
+# backward compat with prompts saved before v0.5.
 _BASE_PROMPT_RE = re.compile(r"\[\s*base\s*prompt\s*\]", re.IGNORECASE)
 
 DEFAULT_NUM_SLOTS = 4
@@ -1079,13 +1077,31 @@ def _on_select_image(store, paths, num_slots, evt: gr.SelectData):
     ]
 
 
+def _image_prompt_head(path, n_lines=3):
+    """First `n_lines` of the positive prompt embedded in the image at `path`
+    (read from its PNG generation info), or "" if there's nothing to read."""
+    try:
+        with Image.open(path) as img:
+            geninfo, _ = images.read_info_from_image(img)
+    except Exception:
+        return ""
+    if not geninfo:
+        return ""
+    try:
+        prompt = parse_generation_parameters(geninfo).get("Prompt", "") or ""
+    except Exception:
+        # Fall back to the raw first block before the Negative prompt / params.
+        prompt = geninfo.split("Negative prompt:")[0].strip()
+    return "\n".join(prompt.splitlines()[:n_lines]).strip()
+
+
 def _on_right_click(store, paths, index, num_slots):
     """
     Thumbnail right-clicked (via javascript/batch_adetailer.js, which puts the
     index in a hidden textbox and clicks a hidden button): select that image and
-    put "[PROMPT]" in Slot 1's ADetailer prompt. Left alone it behaves like
-    an empty box (the image's own prompt); anything typed around it is appended to
-    that prompt. Everything else about the slot is left as it is.
+    fill Slot 1's ADetailer prompt with the first 3 lines of that image's own
+    prompt, read from its embedded generation info. Images with no embedded
+    prompt leave the slot untouched. Everything else about the slot is left as is.
     """
     paths = list(paths or [])
     try:
@@ -1101,7 +1117,9 @@ def _on_right_click(store, paths, index, num_slots):
     config = list(
         store.get(paths[idx]) or _default_config(_get_adetailer_defaults(), num_slots)
     )
-    config[1] = BASE_PROMPT_TOKEN  # slot 1's prompt — position 0 is its preset dropdown
+    head = _image_prompt_head(paths[idx], 3)
+    if head:
+        config[1] = head  # slot 1's prompt — position 0 is its preset dropdown
     store[paths[idx]] = config
 
     return [
@@ -1253,10 +1271,9 @@ def _build_ui_tab():
             "Each slot pulls its model and settings from one of your ADetailer units "
             "(as saved in the img2img panel) — you only override what varies per image. "
             "Slot order is the order the units run in.\n\n"
-            "*Right-click a thumbnail to drop `[PROMPT]` into Slot 1's prompt — it stands "
-            "for that image's own prompt, so leaving it alone inherits, and anything you add "
-            "around it is appended. ←/→ steps through the thumbnails (when you're not "
-            "typing in a box).*"
+            "*Right-click a thumbnail to fill Slot 1's prompt with the first 3 lines of "
+            "that image's own prompt (read from its metadata). ←/→ steps through the "
+            "thumbnails (when you're not typing in a box).*"
         )
 
         gr.HTML(
@@ -1421,7 +1438,7 @@ def _build_ui_tab():
                 # allow_preview=False keeps a click on a thumbnail a *selection*
                 # instead of popping open the full-size viewer.
                 source_gallery = gr.Gallery(
-                    label="Images — click or ←/→ to step through, right-click for Slot 1's [PROMPT]",
+                    label="Images — click or ←/→ to step through, right-click to fill Slot 1 with the image's prompt",
                     # Deliberately NOT suffixed "_gallery": that suffix is what makes
                     # Forge's imageviewer.js attach its lightbox, which we don't want
                     # on the source thumbnails.
