@@ -23,6 +23,7 @@ import copy as _copy
 import os
 import re
 import sys
+import tempfile
 import traceback
 from contextlib import closing
 from functools import partial
@@ -132,6 +133,17 @@ _VARIANT_TOKENS = ("-adetailer", "-hires", "-edited", "-base")
 
 def _natural_key(name):
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", name)]
+
+
+def _is_dragged_temp_copy(path):
+    """True if `path` lives in gradio's upload cache (a drag-dropped file's temp
+    copy) rather than a real on-disk source. Save-to-source must never write next
+    to one of these — the folder is temporary and gets wiped."""
+    root = os.environ.get("GRADIO_TEMP_DIR") or os.path.join(tempfile.gettempdir(), "gradio")
+    try:
+        return os.path.realpath(path).startswith(os.path.realpath(root) + os.sep)
+    except Exception:
+        return False
 
 
 def _pending_bases(folder):
@@ -872,10 +884,22 @@ def batch_adetailer_process(store, paths, sel, use_original_name, filename_suffi
         if save_to_source:
             save_opts["use_original_name"] = True
             save_opts["suffix"] = "-adetailer"
-            save_opts["output_dir"] = os.path.dirname(image_path)
             # png keeps the infotext and is what the pipeline expects, even if
             # the global samples_format is jpg/jxl/...
             save_opts["format"] = "png"
+            if _is_dragged_temp_copy(image_path):
+                # Drag-dropped file: dirname(image_path) is gradio's upload cache,
+                # so "save into each image's own folder" would bury the result in a
+                # temp folder that gradio later wipes. Leave output_dir unset so it
+                # falls back to the configured output dir, and say so.
+                status_messages.append(
+                    f"⚠️ [{idx + 1}/{total}] {name}: 'save into each image's own "
+                    f"folder' is on, but this image was drag-dropped — results go to "
+                    f"the output dir, not a temp folder. Use 'Load Selected Folders' "
+                    f"to save back into the set folders."
+                )
+            else:
+                save_opts["output_dir"] = os.path.dirname(image_path)
 
         # state.begin() resets state.interrupted / stopping_generation, which
         # otherwise stay True forever after a UI reload (request_restart calls
