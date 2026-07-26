@@ -1095,13 +1095,15 @@ def _image_prompt_head(path, n_lines=3):
     return "\n".join(prompt.splitlines()[:n_lines]).strip()
 
 
-def _on_right_click(store, paths, index, num_slots):
+def _on_right_click(store, paths, index, num_slots, img2img_prompt=""):
     """
     Thumbnail right-clicked (via javascript/batch_adetailer.js, which puts the
     index in a hidden textbox and clicks a hidden button): select that image and
     fill Slot 1's ADetailer prompt with the first 3 lines of that image's own
-    prompt, read from its embedded generation info. Images with no embedded
-    prompt leave the slot untouched. Everything else about the slot is left as is.
+    prompt, read from its embedded generation info. If the image has no embedded
+    prompt, fall back to the first 3 lines of the live img2img prompt (stashed by
+    the JS). If neither has anything, the slot is left untouched. Everything else
+    about the slot is left as is.
     """
     paths = list(paths or [])
     try:
@@ -1118,6 +1120,9 @@ def _on_right_click(store, paths, index, num_slots):
         store.get(paths[idx]) or _default_config(_get_adetailer_defaults(), num_slots)
     )
     head = _image_prompt_head(paths[idx], 3)
+    if not head:
+        # No prompt baked into the image — fall back to the live img2img prompt.
+        head = "\n".join((img2img_prompt or "").splitlines()[:3]).strip()
     if head:
         config[1] = head  # slot 1's prompt — position 0 is its preset dropdown
     store[paths[idx]] = config
@@ -1272,8 +1277,9 @@ def _build_ui_tab():
             "(as saved in the img2img panel) — you only override what varies per image. "
             "Slot order is the order the units run in.\n\n"
             "*Right-click a thumbnail to fill Slot 1's prompt with the first 3 lines of "
-            "that image's own prompt (read from its metadata). ←/→ steps through the "
-            "thumbnails (when you're not typing in a box).*"
+            "that image's own prompt (read from its metadata), or the img2img prompt if "
+            "the image has none. ←/→ steps through the thumbnails (when you're not typing "
+            "in a box).*"
         )
 
         gr.HTML(
@@ -1341,6 +1347,7 @@ def _build_ui_tab():
         # contextmenu event, so the JS writes the thumbnail index here and clicks
         # the button.
         rclick_index = gr.Textbox(visible=False, elem_id="batch_adetailer_rclick")
+        rclick_prompt = gr.Textbox(visible=False, elem_id="batch_adetailer_rclick_prompt")
         rclick_btn = gr.Button(visible=False, elem_id="batch_adetailer_rclick_btn")
 
         with gr.Accordion("📁 Test Folders — load pending base images", open=True):
@@ -1467,8 +1474,8 @@ def _build_ui_tab():
         def on_select_image(store, paths, evt: gr.SelectData):
             return _on_select_image(store, paths, num_slots, evt)
 
-        def on_right_click(store, paths, index):
-            return _on_right_click(store, paths, index, num_slots)
+        def on_right_click(store, paths, index, img2img_prompt):
+            return _on_right_click(store, paths, index, num_slots, img2img_prompt)
 
         file_input.change(
             fn=on_files,
@@ -1487,7 +1494,7 @@ def _build_ui_tab():
 
         rclick_btn.click(
             fn=on_right_click,
-            inputs=[store_state, paths_state, rclick_index],
+            inputs=[store_state, paths_state, rclick_index, rclick_prompt],
             outputs=[sel_state, editing_md, *controls, preview_img, store_state],
             queue=False,
             show_progress="hidden",

@@ -1,10 +1,11 @@
 // Right-click a thumbnail in the Batch ADetailer source gallery -> select that
-// image and put "[PROMPT]" in Slot 1's ADetailer prompt (a placeholder for
-// the image's own prompt, so it can be built on rather than only inherited).
+// image and fill Slot 1's ADetailer prompt with the first 3 lines of the image's
+// own prompt (or, if it has none baked in, the live img2img prompt).
 //
 // Gradio has no contextmenu event, so this is the usual Forge dance: stash the
-// clicked index in a hidden textbox, dispatch `input` so gradio's frontend picks
-// the value up, then click a hidden button whose python handler does the work.
+// clicked index (and the current img2img prompt, for the fallback) in hidden
+// textboxes, dispatch `input` so gradio's frontend picks the values up, then
+// click a hidden button whose python handler does the work.
 //
 // Also: ←/→ steps through the thumbnails without clicking each one — it just
 // clicks the neighbour of the selected one, so gradio's own select event does
@@ -13,6 +14,7 @@
     "use strict";
 
     const INDEX_ID = "batch_adetailer_rclick";
+    const PROMPT_ID = "batch_adetailer_rclick_prompt";
     const BUTTON_ID = "batch_adetailer_rclick_btn";
     const GALLERY_ID = "batch_adetailer_source";
 
@@ -36,7 +38,18 @@
 
         field.value = String(index);
         field.dispatchEvent(new Event("input", { bubbles: true }));
-        // Let gradio's input handler commit the value before the click reads it.
+
+        // Stash the live img2img prompt so python can fall back to it when the
+        // clicked image has no prompt of its own. #img2img_prompt lives on the
+        // img2img tab but stays in the DOM even when that tab isn't showing.
+        const promptField = root.querySelector(`#${PROMPT_ID} textarea, #${PROMPT_ID} input`);
+        const img2imgPrompt = root.querySelector("#img2img_prompt textarea, #img2img_prompt input");
+        if (promptField) {
+            promptField.value = img2imgPrompt ? img2imgPrompt.value : "";
+            promptField.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+
+        // Let gradio's input handlers commit the values before the click reads them.
         setTimeout(() => button.click(), 30);
     }
 
