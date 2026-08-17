@@ -20,10 +20,12 @@ StableDiffusionProcessingImg2Img per image with init_images=[img], hand it
 ADetailer's args with skip_img2img=True, and let process_images() do the rest.
 """
 import copy as _copy
+import importlib
+import json
 import os
 import re
 import sys
-import tempfile
+import time
 import traceback
 from contextlib import closing
 from functools import partial
@@ -34,6 +36,13 @@ from PIL import Image
 from modules import images, processing, script_callbacks, scripts, shared
 from modules.infotext_utils import parse_generation_parameters
 from modules_forge import main_thread
+
+import batch_adetailer_shared as bshared
+# scripts/*.py are re-executed on every in-process Reload UI, but root modules
+# stay cached in sys.modules — reload so shared-code edits land too.
+importlib.reload(bshared)
+
+STAGE = bshared.ADETAILER_STAGE
 
 ADETAILER_TITLE = "adetailer"
 
@@ -89,10 +98,11 @@ def _register_settings():
     shared.opts.add_option(
         "batch_adetailer_scan_roots",
         shared.OptionInfo(
-            r"C:\gulp\1. generations and tweaking\Commissions;"
-            r"C:\gulp\1. generations and tweaking\Requests",
+            "",
             "Test-folder scan roots (semicolon-separated)", gr.Textbox, {}, section=section)
-        .info("Each root is scanned for <set>/Tests folders by the Test Folders panel. "
+        .info("Each root is searched (up to 3 levels deep) for Tests folders — so one "
+              "root covers both <root>/<set>/Tests and <root>/Commissions/<set>/Tests. "
+              "The same roots are used to find drag-dropped images back on disk. "
               "Non-existent roots are silently skipped."),
     )
 
@@ -111,78 +121,26 @@ def _register_settings():
             "A prompt read from an old image can name a LoRA that no longer exists under "
             "that name (a training epoch like 'mylora-000021' that was later renamed to "
             "'mylora'). Forge can't resolve it and renders without the LoRA. When on, such "
-            "names are re-pointed at the matching file in your Lora folder."
+            "names are re-pointed at the matching file in your Lora folder. Covers both "
+            "the Batch ADetailer and Batch Hires-Fix tabs."
         ),
     )
 
 # ──────────────────────────────────────────────
-# Test-folder scanning
+# Test-folder scanning — shared core, parameterized by this stage's record.
 #
-# Commission/request sets keep work-in-progress test images in a Tests/
-# subfolder. ADetailer runs FIRST in the refine chain:
+# ADetailer runs FIRST in the refine chain:
 #   NrM.png -> NrM-adetailer.png -> NrM-adetailer-base.png / NrM-adetailer-hires.png
 # A base image is "pending" while it has no -adetailer successor. Bases with a
 # plain -hires sibling went through the old (hires-first) chain and are left
 # alone. Compositional edits are new revisions (1r2), never suffixes.
 # ──────────────────────────────────────────────
-_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".jxl", ".avif", ".heif")
-_VARIANT_TOKENS = ("-adetailer", "-hires", "-edited", "-base")
-
-
-def _natural_key(name):
-    return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", name)]
-
-
-def _is_dragged_temp_copy(path):
-    """True if `path` lives in gradio's upload cache (a drag-dropped file's temp
-    copy) rather than a real on-disk source. Save-to-source must never write next
-    to one of these — the folder is temporary and gets wiped."""
-    root = os.environ.get("GRADIO_TEMP_DIR") or os.path.join(tempfile.gettempdir(), "gradio")
-    try:
-        return os.path.realpath(path).startswith(os.path.realpath(root) + os.sep)
-    except Exception:
-        return False
+def _base_images(folder):
+    return bshared.stage_inputs(folder, STAGE)
 
 
 def _pending_bases(folder):
-    """Full paths of base images in `folder` that have no -adetailer result
-    yet, in natural order (2r1 before 10r1)."""
-    try:
-        files = sorted(os.listdir(folder), key=_natural_key)
-    except OSError:
-        return []
-
-    image_files = [f for f in files if os.path.splitext(f)[1].lower() in _IMAGE_EXTS]
-    stems = {os.path.splitext(f)[0] for f in image_files}
-
-    out = []
-    for f in image_files:
-        stem = os.path.splitext(f)[0]
-        if any(tok in stem.lower() for tok in _VARIANT_TOKENS):
-            continue  # pipeline outputs and their collision copies, not bases
-        if f"{stem}-adetailer" in stems:
-            continue  # already detailed
-        if f"{stem}-hires" in stems:
-            continue  # old hires-first chain already handled this base
-        out.append(os.path.join(folder, f))
-    return out
-
-
-def _scan_test_folders():
-    """[(label, tests_dir_path)] for every <root>/<set>/Tests that still has
-    pending base images. Roots come from the scan-roots setting."""
-    roots = getattr(shared.opts, "batch_adetailer_scan_roots", "") or ""
-    choices = []
-    for root in (r.strip() for r in roots.split(";")):
-        if not root or not os.path.isdir(root):
-            continue
-        for name in sorted(os.listdir(root), key=_natural_key):
-            tdir = os.path.join(root, name, "Tests")  # also matches "tests": NTFS is case-insensitive
-            if os.path.isdir(tdir):
-                n = len(_pending_bases(tdir))
-                if n:
-                    choices.append((f"{name}  ({n} to do)", tdir))
-    return choices
+    return bshared.pending_inputs(folder, STAGE)
 
 
 # ──────────────────────────────────────────────
@@ -367,47 +325,6 @@ def _config_to_unit_dicts(config, defaults, num_slots):
 
     return units
 
-# ──────────────────────────────────────────────
-# Default script args — mirrors modules/api/api.py :: init_default_script_args
-# ──────────────────────────────────────────────
-_default_script_args_cache: list | None = None
-
-def _get_default_script_args():
-    """
-    Build a script_args list of the exact length the img2img ScriptRunner
-    expects, with position 0 = 0 (no selectable script) and every alwayson
-    script's slice filled with that script's own UI default values.
-
-    This is the same technique Forge Neo's API uses (init_default_script_args)
-    when there is no live UI to source args from. Passing placeholder Nones
-    instead breaks alwayson scripts that index into their args expecting real
-    values.
-    """
-    global _default_script_args_cache
-
-    runner = scripts.scripts_img2img
-
-    last_arg_index = 1
-    for script in runner.scripts:
-        if last_arg_index < script.args_to:
-            last_arg_index = script.args_to
-
-    if _default_script_args_cache is not None and len(_default_script_args_cache) == last_arg_index:
-        return _default_script_args_cache
-
-    script_args = [None] * last_arg_index
-    script_args[0] = 0
-
-    with gr.Blocks():  # script.ui() creates gradio components; needs a Blocks context
-        for script in runner.scripts:
-            ui_elems = script.ui(script.is_img2img)
-            if ui_elems:
-                script_args[script.args_from : script.args_to] = [elem.value for elem in ui_elems]
-
-    _default_script_args_cache = script_args
-    return script_args
-
-
 def _assemble_script_args(unit_dicts):
     """
     Full flat script_args array for the img2img runner, with ADetailer's slice
@@ -427,7 +344,7 @@ def _assemble_script_args(unit_dicts):
             "extension (aadetailer-neoforge) and reload the UI."
         )
 
-    script_args = _get_default_script_args().copy()
+    script_args = bshared.get_default_script_args(scripts.scripts_img2img, "img2img").copy()
 
     slice_len = ad_script.args_to - ad_script.args_from
     num_slots = slice_len - 2  # minus the two leading bools
@@ -455,129 +372,6 @@ def _assemble_script_args(unit_dicts):
     return script_args, warning
 
 # ──────────────────────────────────────────────
-# LoRA name repair
-#
-# A prompt inherited from an old image can name a LoRA that no longer exists
-# under that name — typically a training epoch (`mylora-000021`) that was later
-# renamed to `mylora`. Forge resolves <lora:NAME:w> against the filename stems in
-# `networks.available_networks` and the aliases in `available_network_aliases`
-# (an alias is the file's own `ss_output_name` metadata, which for a renamed
-# epoch is neither the old *nor* the new filename). When NAME matches neither,
-# load_networks logs `Failed to load LoRA` and the pass simply renders without
-# it — the missing-LoRA look, with no error on the UI side.
-# ──────────────────────────────────────────────
-_LORA_TOKEN_RE = re.compile(r"<lora:([^:>]+)((?::[^>]*)?)>", re.IGNORECASE)
-_EPOCH_SUFFIX_RE = re.compile(r"-\d{4,6}$")
-
-
-def _lora_networks():
-    """Forge's lora module (extensions-builtin/sd_forge_lora), or None."""
-    nets = sys.modules.get("networks")
-    return nets if hasattr(nets, "available_networks") else None
-
-
-def _resolve_lora_name(name: str, nets):
-    """
-    None  -> the name already resolves, leave it alone
-    ""    -> no such LoRA anywhere, nothing we can do
-    str   -> the filename stem it should be pointed at instead
-    """
-    avail = getattr(nets, "available_networks", None) or {}
-    aliases = getattr(nets, "available_network_aliases", None) or {}
-
-    if name in avail or name in aliases:
-        return None
-
-    by_stem = {k.lower(): v for k, v in avail.items()}
-    by_alias = {k.lower(): v for k, v in aliases.items()}
-    key = name.lower()
-
-    entry = by_stem.get(key) or by_alias.get(key)  # differs only in case
-    if entry is None:
-        # Epoch checkpoints: mylora-000021 -> mylora
-        base = _EPOCH_SUFFIX_RE.sub("", key)
-        entry = by_stem.get(base) or by_alias.get(base)
-        if entry is None:
-            # ...or the file kept an epoch number of its own: mylora-000023
-            for stem, candidate in by_stem.items():
-                if _EPOCH_SUFFIX_RE.sub("", stem) == base:
-                    entry = candidate
-                    break
-
-    if entry is None:
-        return ""
-    return str(getattr(entry, "name", "") or "")
-
-
-def _fix_lora_names(text: str):
-    """Re-point unresolvable <lora:...> names at the real file. -> (text, notes)"""
-    if not text or not getattr(shared.opts, "batch_adetailer_fix_lora_names", True):
-        return text, []
-
-    nets = _lora_networks()
-    if nets is None:
-        return text, []
-
-    notes: list[str] = []
-
-    def replace(match):
-        name = match.group(1)
-        resolved = _resolve_lora_name(name, nets)
-
-        if resolved is None:
-            return match.group(0)
-        if not resolved:
-            notes.append(f"LoRA `{name}` isn't in your Lora folder — this pass runs without it.")
-            return match.group(0)
-
-        notes.append(f"LoRA `{name}` → `{resolved}`.")
-        return f"<lora:{resolved}{match.group(2)}>"
-
-    return _LORA_TOKEN_RE.sub(replace, text), notes
-
-# ──────────────────────────────────────────────
-# Infotext extraction
-# ──────────────────────────────────────────────
-def _apply_source_image_parameters(p, geninfo: str):
-    """
-    Apply the source image's generation parameters (prompt, seed, sampler, ...)
-    to the processing object. ADetailer's inpaint pass inherits these: an empty
-    ad_prompt falls back to p.prompt, and with skip-img2img the steps/sampler it
-    uses come from p (captured into p._ad_orig before the base pass is neutered).
-    """
-    params = parse_generation_parameters(geninfo, [])
-
-    p.prompt = params.get("Prompt", "")
-    p.negative_prompt = params.get("Negative prompt", "")
-    # parse_generation_parameters *subtracts* any matching saved style's text from
-    # the prompt it returns and hands back the style names instead (that's how the
-    # paste button repopulates the styles dropdown). Leaving p.styles empty would
-    # therefore silently drop whatever lives in those styles — LoRA tags included.
-    # process_images folds them back into all_prompts via apply_styles_to_prompt.
-    styles = params.get("Styles array") or []
-    p.styles = list(styles) if isinstance(styles, (list, tuple)) else []
-    p.seed = params.get("Seed", -1)
-    p.subseed = params.get("Variation seed", -1)
-
-    try:
-        p.steps = int(params["Steps"])
-    except (KeyError, ValueError):
-        pass
-    try:
-        p.cfg_scale = float(params["CFG scale"])
-    except (KeyError, ValueError):
-        pass
-    try:
-        p.distilled_cfg_scale = float(params["Distilled CFG Scale"])
-    except (KeyError, ValueError):
-        pass
-
-    if params.get("Sampler"):
-        p.sampler_name = params["Sampler"]
-    if params.get("Schedule type"):
-        p.scheduler = params["Schedule type"]
-
-# ──────────────────────────────────────────────
 # Saving with the original filename + suffix
 # ──────────────────────────────────────────────
 def _fix_infotext(infotext: str | None, width: int, height: int, steps: int | None,
@@ -600,55 +394,6 @@ def _fix_infotext(infotext: str | None, width: int, height: int, steps: int | No
     return infotext
 
 
-def _save_with_original_name(processed, p, save_opts: dict, orig_size, orig_steps,
-                             orig_sampler=None):
-    """
-    Save result images as <original filename><suffix>.<ext> directly in the
-    output directory (no dated subfolders, no [seed]-[prompt] naming pattern).
-    Collisions get a -1, -2, ... counter instead of overwriting.
-    """
-    outdir = p.outpath_samples
-    os.makedirs(outdir, exist_ok=True)
-    extension = save_opts.get("format") or shared.opts.samples_format
-    stem, suffix = save_opts["stem"], save_opts.get("suffix", "")
-
-    for i, image in enumerate(processed.images):
-        base = f"{stem}{suffix}" if i == 0 else f"{stem}{suffix}-{i}"
-        name = base
-        n = 1
-        while os.path.exists(os.path.join(outdir, f"{name}.{extension}")):
-            name = f"{base}-{n}"
-            n += 1
-
-        infotext = processed.infotexts[i] if i < len(processed.infotexts) else None
-        infotext = _fix_infotext(infotext, orig_size[0], orig_size[1], orig_steps, orig_sampler)
-
-        images.save_image(
-            image, outdir, "",
-            info=infotext,
-            forced_filename=name,
-            extension=extension,
-            save_to_dirs=False,
-            p=p,
-        )
-
-# ──────────────────────────────────────────────
-# Cancelling a running batch
-#
-# shared.state.interrupted can't carry the request on its own: state.begin() at
-# the top of every image resets it, so a cancel that lands between two images
-# would be wiped. This flag survives that and is only cleared when a batch starts.
-# ──────────────────────────────────────────────
-_cancel_requested = False
-
-
-def _request_cancel():
-    """Cancel button: abort the image being sampled, then stop the batch."""
-    global _cancel_requested
-    _cancel_requested = True
-    shared.state.interrupt()
-    return "⏹️ Cancel requested — finishing the current image, then stopping."
-
 # ──────────────────────────────────────────────
 # Core Processing Logic
 # ──────────────────────────────────────────────
@@ -668,7 +413,7 @@ def _process_single_image(img: Image.Image, geninfo: str | None, unit_dicts: lis
                 # "[base prompt]" -> ADetailer's own [PROMPT] placeholder, which it
                 # substitutes with the image's prompt (p.all_prompts) at inpaint time.
                 text = _BASE_PROMPT_RE.sub("[PROMPT]", unit.get(key, "") or "")
-                unit[key], found = _fix_lora_names(text)
+                unit[key], found = bshared.fix_lora_names(text)
                 notes += found
 
         script_args, _warning = _assemble_script_args(unit_dicts)
@@ -712,14 +457,18 @@ def _process_single_image(img: Image.Image, geninfo: str | None, unit_dicts: lis
         p.script_args = script_args
 
         if geninfo:
-            _apply_source_image_parameters(p, geninfo)
+            # ADetailer's inpaint pass inherits these: an empty ad_prompt falls
+            # back to p.prompt, and with skip-img2img the steps/sampler it uses
+            # come from p (captured into p._ad_orig before the base pass is
+            # neutered).
+            bshared.apply_source_image_parameters(p, geninfo)
 
         # A slot with a blank ADetailer prompt inpaints with *this* prompt (ADetailer
         # falls back to p.all_prompts), so a LoRA that can't be resolved here is a
         # LoRA missing from the inpaint.
-        p.prompt, found = _fix_lora_names(p.prompt)
+        p.prompt, found = bshared.fix_lora_names(p.prompt)
         notes += found
-        p.negative_prompt, found = _fix_lora_names(p.negative_prompt)
+        p.negative_prompt, found = bshared.fix_lora_names(p.negative_prompt)
         notes += found
 
         print(f"[Batch ADetailer] base prompt: {p.prompt!r}")
@@ -753,7 +502,10 @@ def _process_single_image(img: Image.Image, geninfo: str | None, unit_dicts: lis
             return [], [], None, notes
 
         if save_opts.get("use_original_name"):
-            _save_with_original_name(processed, p, save_opts, orig_size, orig_steps, orig_sampler)
+            bshared.save_with_original_name(
+                processed, p, save_opts,
+                fix_info=lambda t: _fix_infotext(t, orig_size[0], orig_size[1],
+                                                 orig_steps, orig_sampler))
 
         return processed.images, processed.infotexts, None, notes
     except Exception:
@@ -767,7 +519,7 @@ def batch_adetailer_run_selected(store, paths, sel, use_original_name, filename_
     Re-run just the selected image — for when a batch came out fine except for one
     or two. It's the batch loop over a single path, so the config, saving and
     cancelling all behave identically. The result doesn't overwrite the earlier
-    one: _save_with_original_name adds a -1, -2, ... counter on collision.
+    one: save_with_original_name adds a -1, -2, ... counter on collision.
     """
     paths = list(paths or [])
     if sel is None or not (0 <= int(sel) < len(paths)):
@@ -793,8 +545,7 @@ def batch_adetailer_process(store, paths, sel, use_original_name, filename_suffi
     .change event yet still counts — the same defence ADetailer uses in its own
     on_generate_click.
     """
-    global _cancel_requested
-    _cancel_requested = False
+    my_run = bshared.start_run(STAGE)
 
     num_slots = _get_num_slots()
 
@@ -833,14 +584,11 @@ def batch_adetailer_process(store, paths, sel, use_original_name, filename_suffi
 
     for idx, image_path in enumerate(paths):
         fname = os.path.basename(image_path)
-        name = fname
-        if save_to_source:
-            # Every Tests folder has a 1r1-hires.png — prefix the set so the
-            # status lines read "Commission 137 - M, Fluorite/1r1-hires.png".
-            set_dir = os.path.dirname(os.path.dirname(image_path))
-            name = f"{os.path.basename(set_dir)}/{fname}"
+        # Every set has a 1r1.png — prefix the set name so the status lines read
+        # "Commission 137 - M, Fluorite/1r1.png" and stay tellable apart.
+        name = bshared.display_name(image_path) if save_to_source else fname
 
-        if _cancel_requested:
+        if bshared.cancel_requested(STAGE, my_run):
             status_messages.append(f"⏹️ Cancelled — {idx} of {total} images processed.")
             break
 
@@ -848,7 +596,15 @@ def batch_adetailer_process(store, paths, sel, use_original_name, filename_suffi
         if not config:
             config = _default_config(defaults, num_slots)
 
-        unit_dicts = _config_to_unit_dicts(config, defaults, num_slots)
+        try:
+            unit_dicts = _config_to_unit_dicts(config, defaults, num_slots)
+        except (TypeError, ValueError) as e:
+            # A malformed import (unvalidated JSON) mustn't kill the whole batch.
+            status_messages.append(
+                f"❌ [{idx + 1}/{total}] {name}: bad per-image settings ({e}) — skipped."
+            )
+            failed_count += 1
+            continue
         if not unit_dicts:
             status_messages.append(
                 f"⚠️ [{idx + 1}/{total}] {name}: no enabled unit slots — skipped."
@@ -885,16 +641,16 @@ def batch_adetailer_process(store, paths, sel, use_original_name, filename_suffi
             # png keeps the infotext and is what the pipeline expects, even if
             # the global samples_format is jpg/jxl/...
             save_opts["format"] = "png"
-            if _is_dragged_temp_copy(image_path):
-                # Drag-dropped file: dirname(image_path) is gradio's upload cache,
-                # so "save into each image's own folder" would bury the result in a
-                # temp folder that gradio later wipes. Leave output_dir unset so it
-                # falls back to the configured output dir, and say so.
+            if bshared.is_dragged_temp_copy(image_path):
+                # A drag-dropped file whose original resolve_dropped_paths could
+                # not find: dirname() is gradio's upload cache, so saving there
+                # would bury the result in a folder gradio later wipes. Leave
+                # output_dir unset so it falls back to the output dir, and say so.
                 status_messages.append(
                     f"⚠️ [{idx + 1}/{total}] {name}: 'save into each image's own "
-                    f"folder' is on, but this image was drag-dropped — results go to "
-                    f"the output dir, not a temp folder. Use 'Load Selected Folders' "
-                    f"to save back into the set folders."
+                    f"folder' is on, but this image wasn't found under your scan "
+                    f"roots — its result goes to the output dir. Add its folder in "
+                    f"Settings → Batch ADetailer → scan roots."
                 )
             else:
                 save_opts["output_dir"] = os.path.dirname(image_path)
@@ -927,7 +683,7 @@ def batch_adetailer_process(store, paths, sel, use_original_name, filename_suffi
 
         # Cancel/Interrupt pressed during this image: report and stop the batch.
         # (Checked before the next begin(), which would reset shared.state's flags.)
-        if _cancel_requested or shared.state.interrupted or shared.state.stopping_generation:
+        if bshared.cancel_requested(STAGE, my_run) or shared.state.interrupted or shared.state.stopping_generation:
             status_messages.append(
                 f"⏹️ [{idx + 1}/{total}] Cancelled during {name} — stopping batch."
             )
@@ -1025,20 +781,13 @@ def _on_files(files, store, num_slots, suffix_filter):
     """
     Files dropped: keep only files whose stem ends with the suffix filter (so a
     whole folder can be dragged in and only the `-hires` variants load), then
-    load them. NOTE: these paths are gradio's temp-cache copies of the dropped
-    files, not the originals — fine for drag-drop (results go to the output
-    dir), and the reason folder mode does NOT route through this box.
+    load them. The paths gradio gives us are temp-cache copies, so they're traded
+    back for the on-disk originals first — otherwise "save into each image's own
+    folder" would target gradio's cache. (Folder mode still does NOT route through
+    this box: its paths are already the real ones.)
     """
-    paths = [f if isinstance(f, str) else getattr(f, "name", None) for f in (files or [])]
-    paths = [p for p in paths if p]
-
-    suffix = (suffix_filter or "").strip().lower()
-    skipped = 0
-    if suffix:
-        kept = [p for p in paths
-                if os.path.splitext(os.path.basename(p))[0].lower().endswith(suffix)]
-        skipped = len(paths) - len(kept)
-        paths = kept
+    paths = bshared.file_paths(files)
+    paths, skipped = bshared.filter_suffix(paths, suffix_filter)
 
     # Push the filtered list back into the drop zone so it matches what loaded.
     # gr.update() (no value) when nothing was skipped — this runs in the drop
@@ -1046,8 +795,13 @@ def _on_files(files, store, num_slots, suffix_filter):
     # forever; the retrigger after a filtering pass filters nothing and stops.
     file_update = gr.update(value=paths or None) if skipped else gr.update()
     skip_note = (
-        f"\n\n*Skipped {skipped} file(s) not ending in `{suffix}`.*" if skipped else ""
+        f"\n\n*Skipped {skipped} file(s) not ending in `{(suffix_filter or '').strip()}`.*"
+        if skipped else ""
     )
+
+    paths, notes = bshared.resolve_dropped_paths(paths, STAGE)
+    for note in notes:
+        skip_note += f"\n\n*{note}*"
 
     out = _load_paths(paths, store, num_slots, skip_note)
     out.insert(len(out) - 1, file_update)  # the outputs list puts the drop zone before the preview
@@ -1203,9 +957,75 @@ def _on_apply_to_all(store, paths, sel, *control_values):
         f"(each image kept its own prompts)."
     )
 
+def _export_prompts(store, paths, folder):
+    """Snapshot every loaded image's slot configs (keyed by filename) into a
+    timestamped JSON file, so the per-image prompts survive a restart."""
+    if not paths:
+        return "Nothing to export — load images first."
+    folder = (folder or "").strip().strip('"')
+    if not folder:
+        return "Set an export folder first."
+    data = {os.path.basename(p): (store or {}).get(p) for p in paths}
+    data = {k: v for k, v in data.items() if v}
+    if not data:
+        return "Nothing to export — no per-image settings yet."
+    out = os.path.join(folder, time.strftime("batch_adetailer_prompts_%Y%m%d_%H%M%S.json"))
+    os.makedirs(folder, exist_ok=True)
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    return f"💾 Exported settings for {len(data)} image(s) → {out}"
+
+
+def _import_prompts(file, store, paths, sel, num_slots):
+    """Merge an exported JSON back onto the loaded images, matched by filename
+    (full paths differ between sessions — gradio temp copies, moved folders).
+    Returns [store, *control updates, status]."""
+    noop = [gr.update()] * (num_slots * CONTROLS_PER_SLOT)
+    path = file if isinstance(file, str) else getattr(file, "name", None)
+    if not path:
+        return [store, *noop, gr.update()]
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("not a Batch ADetailer export")
+    except Exception as e:
+        return [store, *noop, f"⚠️ Couldn't read that export: {e}"]
+
+    if not paths:
+        return [store, *noop,
+                "⚠️ Load your images first, then import — entries are matched by filename."]
+
+    want = num_slots * CONTROLS_PER_SLOT
+    store = dict(store or {})
+    matched = 0
+    for p in paths:
+        cfg = data.get(os.path.basename(p))
+        if not isinstance(cfg, list):
+            continue
+        base = list(store.get(p) or _default_config(_get_adetailer_defaults(), num_slots))
+        base[: min(len(cfg), want)] = cfg[:want]
+        store[p] = base
+        matched += 1
+
+    updates = noop
+    if sel is not None and 0 <= int(sel) < len(paths):
+        cfg = store.get(paths[int(sel)])
+        if cfg:
+            updates = _control_updates(cfg, num_slots)
+
+    msg = f"📥 Imported settings for {matched} of {len(paths)} loaded image(s)."
+    if matched < len(data):
+        msg += f" ({len(data) - matched} entries in the file had no matching image.)"
+    return [store, *updates, msg]
+
 # ──────────────────────────────────────────────
 # Gradio UI Tab
 # ──────────────────────────────────────────────
+def _folder_choices():
+    return bshared.folder_choices(STAGE)
+
+
 def _slot_controls(slot_index, num_slots):
     """
     One execution slot's controls. Order must match the config layout:
@@ -1351,13 +1171,22 @@ def _build_ui_tab():
         rclick_btn = gr.Button(visible=False, elem_id="batch_adetailer_rclick_btn")
 
         with gr.Accordion("📁 Test Folders — load pending base images", open=True):
-            folder_select = gr.CheckboxGroup(
-                choices=_scan_test_folders(),
-                label="Sets with base images that have no -adetailer version yet",
-            )
+            folder_select = _folder_choices()
             with gr.Row():
                 load_btn = gr.Button("📥 Load Selected Folders", variant="primary", scale=3)
                 rescan_btn = gr.Button("🔄 Rescan", scale=1)
+
+            # The panel above is a to-do list, so a finished set is invisible and
+            # a set that keeps its images outside a Tests folder never appears at
+            # all. This loads any folder as-is, done or not.
+            with gr.Row():
+                folder_path = gr.Textbox(
+                    label="…or load every base image in one folder, done or not",
+                    placeholder=r"C:\art\Commission 12 - Example",
+                    max_lines=1,
+                    scale=4,
+                )
+                load_path_btn = gr.Button("📂 Load Folder", scale=1)
 
         # The drop zone spans the full width at the top: parked in the left column it
         # grows with the file list and pushes the unit controls off the screen.
@@ -1377,6 +1206,23 @@ def _build_ui_tab():
                 max_lines=1,
                 scale=1,
             )
+
+        with gr.Accordion("💾 Export / import per-image prompts", open=False):
+            with gr.Row():
+                export_dir = gr.Textbox(
+                    value="",
+                    label="Export folder",
+                    placeholder=r"C:\art\prompt exports",
+                    max_lines=1,
+                    scale=3,
+                )
+                export_btn = gr.Button("💾 Export prompts", scale=1)
+                import_file = gr.File(
+                    label="Import — drop an exported .json here (after loading the images)",
+                    file_types=[".json"],
+                    type="filepath",
+                    scale=2,
+                )
 
         with gr.Row():
             # ── Left column: per-image unit editor ──
@@ -1527,35 +1373,70 @@ def _build_ui_tab():
             queue=False,
         )
 
-        def _load_folders(folders, store):
-            """Pending base images of the ticked sets, loaded directly — NOT
-            through the drop zone: gradio copies every value that round-trips a
-            gr.File into its temp cache, and save-to-source derives the output
-            folder from each path, so the paths must stay the originals for
-            results to land back in the Tests folders. Also ticks
-            save-to-source."""
-            files = [f for folder in (folders or []) for f in _pending_bases(folder)]
+        export_btn.click(
+            fn=_export_prompts,
+            inputs=[store_state, paths_state, export_dir],
+            outputs=[status_text],
+            queue=False,
+        )
+
+        import_file.change(
+            fn=lambda file, store, paths, sel: _import_prompts(
+                file, store, paths, sel, num_slots
+            ),
+            inputs=[import_file, store_state, paths_state, sel_state],
+            outputs=[store_state, *controls, status_text],
+            queue=False,
+        )
+
+        def _load_folders(folders, store, pending_only=True, empty_msg=None):
+            """Base images of the given folders, loaded directly — NOT through the
+            drop zone: gradio copies every value that round-trips a gr.File into
+            its temp cache, and save-to-source derives the output folder from each
+            path, so the paths must stay the originals for results to land back in
+            the source folders. Also ticks save-to-source."""
+            pick = _pending_bases if pending_only else _base_images
+            folders = [f for f in (folders or []) if f]
+            # A ticked set covers its own folder AND its Tests folder. The 📂
+            # path box stays literal: pending_only=False loads exactly one dir.
+            dirs = ([d for f in folders for d in bshared.set_scan_dirs(f)]
+                    if pending_only else folders)
+            files = [f for d in dirs for f in pick(d)]
             if not files:
                 noop = [gr.update()] * (6 + num_slots * CONTROLS_PER_SLOT)
-                return [*noop, gr.update(), (
+                return [*noop, gr.update(), empty_msg or (
                     "No pending base images — tick at least one set "
                     "(🔄 Rescan if the list is stale)."
                 )]
             return [*_load_paths(files, store, num_slots), gr.update(value=True), (
-                f"Loaded {len(files)} image(s) from {len(folders or [])} folder(s) — "
+                f"Loaded {len(files)} image(s) from {len(folders)} folder(s) — "
                 "configure prompts, then 🚀 Run Batch ADetailer."
             )]
+
+        folder_outputs = [source_gallery, paths_state, store_state, sel_state,
+                          editing_md, *controls, preview_img, save_to_source,
+                          status_text]
 
         load_btn.click(
             fn=_load_folders,
             inputs=[folder_select, store_state],
-            outputs=[source_gallery, paths_state, store_state, sel_state, editing_md,
-                     *controls, preview_img, save_to_source, status_text],
+            outputs=folder_outputs,
+            queue=False,
+        )
+
+        load_path_btn.click(
+            fn=lambda path, store: _load_folders(
+                [(path or "").strip().strip('"')], store, pending_only=False,
+                empty_msg="No base images in that folder — check the path. "
+                          "(-adetailer / -hires / -edited / -base files aren't bases.)",
+            ),
+            inputs=[folder_path, store_state],
+            outputs=folder_outputs,
             queue=False,
         )
 
         rescan_btn.click(
-            fn=lambda: gr.CheckboxGroup(choices=_scan_test_folders(), value=[]),
+            fn=_folder_choices,
             inputs=[],
             outputs=[folder_select],
             queue=False,
@@ -1564,7 +1445,7 @@ def _build_ui_tab():
         # queue=False so the click is served straight away instead of queueing
         # behind the running batch — otherwise the cancel could never arrive.
         cancel_btn.click(
-            fn=_request_cancel,
+            fn=lambda: bshared.request_cancel(STAGE),
             inputs=[],
             outputs=[status_text],
             queue=False,
@@ -1581,7 +1462,7 @@ def _build_ui_tab():
             inputs=run_inputs,
             outputs=[status_text],
         ).then(  # a save-to-source run consumed pending work — keep the list honest
-            fn=lambda: gr.CheckboxGroup(choices=_scan_test_folders(), value=[]),
+            fn=_folder_choices,
             inputs=[],
             outputs=[folder_select],
         )

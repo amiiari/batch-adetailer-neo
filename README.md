@@ -1,91 +1,43 @@
-# Batch ADetailer for Forge Neo
+# Batch ADetailer + Batch Hires-Fix for Forge Neo
 
-A batch-processing ADetailer extension for [Stable Diffusion WebUI Forge — Neo](https://github.com/Haoming02/sd-webui-forge-classic/tree/neo).
+Two batch-processing tabs for [Stable Diffusion WebUI Forge — Neo](https://github.com/Haoming02/sd-webui-forge-classic/tree/neo),
+built around one shared core. Drop in (or auto-discover) a folder's worth of
+images and refine them one after another:
 
-oooo this is really helpful for me! but you can drag in your images, and configure each image to have it's own adetailer settings / prompt all in one go! thank you claude
+- **Batch ADetailer** — runs each image through ADetailer (detect + inpaint
+  faces/hands/...) with **per-image** unit settings and prompts.
+- **Batch Hires-Fix** — runs each image through Forge's own hires-fix pipeline,
+  inheriting every image's generation parameters from its metadata.
 
 ![Forge Neo](https://img.shields.io/badge/Forge-Neo-blue) ![License](https://img.shields.io/badge/license-MIT-green)
 
+## The pipeline
+
+The tabs are the two stages of one refine chain over work-in-progress folders:
+
+```
+1r1.png  →  1r1-adetailer.png  →  1r1-adetailer-base.png + 1r1-adetailer-hires.png
+ (base)      (Batch ADetailer)                (Batch Hires-Fix)
+```
+
+Images are named `<image>r<revision>` (`1r1`, `1r2`, `10r13`); compositional
+edits are new revisions, never suffixes, and only the **latest revision** of
+each image number is picked up. ADetailer runs first — faces are repaired at
+base resolution, where detection pays off — and the low-denoise hires pass
+afterwards re-sharpens its output. The hires stage also saves a plain Lanczos
+`-base` twin at the same resolution: the unedited bottom layer for a layered
+(e.g. Krita) edit stage, so hires drift can be erased away per-region.
+
+You don't have to adopt any of this to use the tabs — plain drag-and-drop with
+a custom filename suffix works on any images.
+
 ## Requirements
 
-The [ADetailer](https://github.com/Bing-su/adetailer) extension must be installed
-and enabled (built against the `aadetailer-neoforge` fork). This extension drives
-ADetailer's own pipeline — it does not reimplement detection or inpainting.
-
-## How it works
-
-Drop your images. Click a thumbnail on the right, and that image's **slots** load
-on the left. Each slot picks one of your ADetailer units — which brings along that
-unit's detection model **and every setting you saved for it** in the img2img
-ADetailer panel (mask blur, dilate/erode, padding, steps, CFG, sampler, ...). You
-only override the handful of things that actually vary per image:
-
-- **ADetailer prompt / negative prompt** (empty = reuse that image's own prompt
-  from its metadata; `[base prompt]` = that same prompt, but with room to add to it)
-- **Detection confidence**
-- **Inpaint denoising strength**
-- **Mask max area ratio**
-
-**Slot order is execution order.** So on an image where a hand overlaps a face,
-put the hand unit in Slot 1 and the face unit in Slot 2, and the face pass runs
-last — over the top of the hand — for maximum retention. Any image where you don't
-care just keeps the defaults.
-
-**Right-click a thumbnail** to drop `[base prompt]` into Slot 1's prompt for that
-image. It stands for that image's own prompt, so leaving it alone inherits exactly
-as an empty box would — and anything you write around it is *added* to that
-prompt, e.g. `[base prompt], detailed eyes, looking at viewer`. It works in any
-slot and in the negative box too (it's ADetailer's `[PROMPT]` placeholder under a
-friendlier name).
-
-**▶️ Run this image** (next to Run Batch) re-runs only the thumbnail you have
-selected — for when a batch came out fine except for one or two. It saves
-alongside the earlier result rather than overwriting it (`mypic-adetailer-1.png`),
-so you can pick the one you prefer.
-
-There's an **Apply these settings to all images** button for when one config suits
-the whole batch. It copies the unit choice, confidence, denoising strength and
-mask max ratio onto every image — but **not the prompts**, since those are the
-part that's meant to differ per image. Every image keeps its own.
-
-## Features
-
-- **Per-image settings** — every dropped image remembers its own slots, prompts,
-  and sliders
-- **Inherits your ADetailer defaults** — models and all the fiddly settings come
-  from what you configured in the img2img ADetailer panel (Settings → Defaults),
-  so the batch tab stays uncluttered and always matches your setup
-- **Reorderable units** — per image, choose which unit runs first
-- **No base-image regeneration** — uses ADetailer's "skip img2img" path, so the
-  base pass is a throwaway 1-step 128×128 render and only the detected regions are
-  actually inpainted, at full resolution
-- **Per-image prompt inheritance** — an empty ADetailer prompt falls back to the
-  image's own prompt, read from its embedded generation info
-- **LoRA name repair** — an old image's prompt often names a LoRA that has since
-  been renamed (a training epoch like `mylora-000021` that's now just `mylora`).
-  Forge can't resolve it and quietly renders without the LoRA; this re-points the
-  name at the real file, and says so in the log when it can't
-- **Keep your filenames** — results save as `<original name><suffix>.png`
-  (e.g. `mypic-adetailer.png`) flat in the output folder (optional, on by default)
-- **Roomy layout** — the drop zone spans the top, and the thumbnail gallery has a
-  drag handle in its bottom-right corner for when four at a time isn't enough
-- **Preview beside the controls** — the selected image shows whole (scaled to
-  fit) at the top of the editor column, so you always see what you're
-  configuring; drag the box's bottom-right corner to size it
-- **Arrow-key navigation** — ←/→ steps through the thumbnails (whenever you're
-  not typing in a box), no clicking each one
-- **Tag autocomplete support** — if you use sd-webui-tagcomplete, it works in
-  the slot prompt boxes out of the box (they expose the same id prefixes it
-  already targets for ADetailer's own boxes)
-- **Suffix filter on the drop zone** — drag in a whole folder's worth of files and
-  only the ones ending in the suffix load; the rest are skipped (empty = load all)
-- **Test-folder mode** — scans your work directories for `<set>/Tests` folders
-  with base images that have no `-adetailer` version yet, loads them with one
-  click, and saves each result back next to its own source image
-- **Live progress** — the log fills in as each image finishes; the Cancel button
-  aborts the image being worked on and stops the batch
-- **Readable errors** — failures show the full traceback in the status log and
-  skip to the next image (configurable)
+The [ADetailer](https://github.com/Bing-su/adetailer) extension must be
+installed and enabled for the **Batch ADetailer** tab (built against the
+`aadetailer-neoforge` fork) — that tab drives ADetailer's own pipeline rather
+than reimplementing detection or inpainting. The **Batch Hires-Fix** tab works
+without it. No extra pip dependencies.
 
 ## Installation
 
@@ -95,56 +47,162 @@ part that's meant to differ per image. Every image keeps its own.
    git clone https://github.com/amiiari/batch-adetailer-neo
    ```
 2. Restart Forge Neo (or Reload UI).
-3. A new **Batch ADetailer** tab appears.
+3. Two new tabs appear: **Batch ADetailer** and **Batch Hires-Fix**.
 
-No extra dependencies are required.
+> Upgrading from the separate `batch-hires-fix-neo` extension? Delete its
+> folder — the tab now ships from here, with the same settings keys, so your
+> saved settings carry over.
 
-## Usage
+## Batch ADetailer
 
-1. Set your ADetailer units up once, the way you like them, on the **img2img**
-   tab, and save them as defaults (Settings → Defaults, or the `ui-config.json`
-   mechanism). Unit 1 = faces, Unit 2 = hands, etc.
-2. Open the **Batch ADetailer** tab and drop your images in.
-3. Click a thumbnail; tune that image's slots on the left. Repeat for any image
-   that needs different treatment.
-4. Click **🚀 Run Batch ADetailer**.
+Drop your images. Click a thumbnail on the right, and that image's **slots**
+load on the left. Each slot picks one of your ADetailer units — which brings
+along that unit's detection model **and every setting you saved for it** in the
+img2img ADetailer panel (mask blur, dilate/erode, padding, steps, CFG,
+sampler, ...). You only override the handful of things that vary per image:
 
-> **Note:** the number of slots is capped by **Settings → ADetailer → Max models**.
+- **ADetailer prompt / negative prompt** (empty = reuse that image's own prompt
+  from its metadata; `[PROMPT]` — or the friendlier `[base prompt]` — stands
+  for that prompt with room to add to it: `[PROMPT], detailed eyes`)
+- **Detection confidence**
+- **Inpaint denoising strength**
+- **Mask max area ratio**
+
+**Slot order is execution order.** On an image where a hand overlaps a face,
+put the hand unit in Slot 1 and the face unit in Slot 2, and the face pass runs
+last — over the top of the hand.
+
+**Right-click a thumbnail** to fill Slot 1's prompt with the first 3 lines of
+that image's own prompt (read from its metadata), or the live img2img prompt if
+the image has none — a quick starting point to edit from.
+
+**▶️ Run this image** re-runs only the selected thumbnail — for when a batch
+came out fine except for one or two. It saves alongside the earlier result
+(`mypic-adetailer-1.png`) rather than overwriting it.
+
+**📋 Apply these settings to all images** copies the unit choice, confidence,
+denoising strength and mask max ratio onto every image — but **not the
+prompts**, since those are the part that's meant to differ per image.
+
+More on this tab:
+
+- **No base-image regeneration** — uses ADetailer's "skip img2img" path, so the
+  base pass is a throwaway 1-step 128×128 render and only the detected regions
+  are actually inpainted, at full resolution. The saved metadata is repaired to
+  keep the source's real steps/size/sampler, so the hires stage inherits true
+  parameters.
+- **Inherits your ADetailer defaults** from the img2img panel (Settings →
+  Defaults), so the batch tab stays uncluttered and always matches your setup.
+  The number of slots is capped by **Settings → ADetailer → Max models**.
+- **Export / import per-image prompts** — snapshot every loaded image's slot
+  configs to a JSON file and merge them back later (matched by filename), so
+  per-image work survives a restart.
+- **Tag autocomplete** — if you use sd-webui-tagcomplete, it works in the slot
+  prompt boxes out of the box.
+- **←/→ arrow keys** step through the thumbnails (when you're not typing in a
+  box); the thumbnail gallery and preview have drag handles to resize.
+
+## Batch Hires-Fix
+
+Drag in images generated by txt2img (images without embedded metadata still
+process, but with an empty prompt) and set the hires-fix parameters:
+
+| Control | Meaning |
+|---|---|
+| Denoising Strength | how much the upscale pass re-details the image |
+| Upscale By | scale factor |
+| Hires Upscaler | upscaler model (`Latent` = latent-space upscale) |
+| Hires CFG Scale | CFG for the hires pass (1.0 disables the negative prompt!) |
+| Hires Steps | steps for the hires pass; `0` = same as the image's own step count |
+| Resize to Width/Height | exact target size, `0` = use scale factor |
+| Hires sampling method / schedule type | override sampler for the hires pass |
+| Save as original filename + suffix | keep your file names, e.g. `pic.png → pic-hires.png` |
+
+- **Faithful to the ✨ button** — uses Forge's own hires-fix pipeline
+  (`firstpass_image` + `process_images`), not a reimplementation.
+- **Per-image parameter inheritance** — each image's prompt, negative prompt,
+  styles, seed (with variation seed and strength), steps, sampler, scheduler,
+  CFG, clip skip, and shift (distilled CFG) are read from its embedded
+  generation info, so every image is upscaled exactly the way it was generated.
+- **`-base` Lanczos twin** — optionally saves a plain upscale of the source at
+  the result's exact size (no model pass), the unedited bottom layer for the
+  layered edit stage. On by default, idempotent on re-runs.
+- **Full lightbox preview** — click a result for the full-size viewer with ←/→
+  arrow-key navigation, same as the txt2img gallery.
+
+## Shared between both tabs
+
+- **Test-folder mode** (below) with per-stage pending detection.
+- **Keep your filenames** — results save as `<original name><suffix>.png` flat
+  in the output folder, no dated subfolders or numbered naming; collisions get
+  a `-1`, `-2`, ... counter instead of overwriting.
+- **Drag-drop still saves to source** — the browser only uploads bytes, so a
+  dropped file arrives as a temp copy with its folder lost. Dropped files are
+  traded back for the on-disk originals (same name, same size, byte-identical)
+  found under the scan roots, so *save into each image's own folder* works for
+  drag-drop too.
+- **Suffix filter on the drop zone** — drag a whole folder's worth in and only
+  files ending in the suffix load (empty = load everything).
+- **LoRA name repair** — an old image's prompt often names a LoRA that has
+  since been renamed (a training epoch like `mylora-000021` that's now just
+  `mylora`). Forge can't resolve it and quietly renders without the LoRA; both
+  tabs re-point the name at the real file, and say so in the log when they
+  can't.
+- **Live progress** — the log fills in as each image finishes; the Cancel
+  button aborts the image being worked on and stops that batch (and only that
+  batch).
+- **Readable errors** — failures show the full traceback in the status log and
+  skip to the next image (configurable per tab).
 
 ### Test-folder mode
 
-ADetailer runs **first** in the refine chain:
+The **📁 Test Folders** panel at the top of each tab searches the roots
+configured in Settings, up to 3 levels deep, for **sets** — a set is any folder
+that has a `Tests` subfolder. So one root covers sets kept directly under it
+(`<root>/Commission 12`) *and* sets kept in a group folder
+(`<root>/Commissions/Commission 12`). **Requests groups** are the exception:
+folders inside a `Requests` folder are sets even without a `Tests` subfolder
+(they keep their images directly in the folder).
 
-```
-1r1.png  ->  1r1-adetailer.png  ->  1r1-adetailer-base.png + 1r1-adetailer-hires.png
-```
+One entry covers both halves of a set: its own folder and its `Tests` folder
+are scanned and loaded together. Nothing else is — archives under
+`Tests/Finished`, a `Reference` folder and loose scratch directories are not
+work in progress.
 
-The **📁 Test Folders** panel at the top scans the roots configured in Settings
-for `<set>/Tests` folders (e.g. `Commissions/Commission 137/Tests`). A set is
-listed while its Tests folder has base images (like `3r1.png`) with no
-`-adetailer` version next to them. Bases that already have a plain `-hires`
-sibling went through the old hires-first chain and are left alone; compositional
-edits should be saved as new revisions (`1r2.png`), not suffixes.
+The panel is a **to-do list** of pending work:
 
-Tick the sets you want and click **📥 Load Selected Folders** — the pending
-images land in the tab like a normal drop, so you still configure prompts per
-image before running. Loading also ticks the save-into-source checkbox: with it
-on, every result saves as `<name>-adetailer.png` into the same folder its
-source came from (always png, suffix and output-dir settings ignored), which is
-what the pending scan keys on — so re-running only ever does new work, and the
-list rescans itself after each batch. The saved metadata keeps the source's
-real steps/size/sampler, so the hires-fix stage inherits true parameters.
+- On **Batch ADetailer**, a set is listed while it has base images (like
+  `3r1.png`) with no `-adetailer` version next to them. Bases that already have
+  a plain `-hires` sibling went through the old hires-first chain and are left
+  alone.
+- On **Batch Hires-Fix**, a set is listed while it has `-adetailer` images with
+  no `-hires` or `-edited` successor.
+
+Tick the sets you want and load/run them: every result saves back **next to its
+own source image** with the stage's suffix (`<name>-adetailer.png` /
+`<name>-hires.png`, always png — that naming is what the pending scan keys on,
+so re-running only ever does new work), and the list rescans itself after each
+batch. A finished set doesn't appear; to load a folder anyway — to redo a set,
+or one that keeps images outside a `Tests` folder — paste its path into the
+**📂 Load Folder** box (re-runs land as `<name>-adetailer-1.png` /
+`<name>-hires-1.png`, originals are never overwritten).
 
 ## Settings
 
-Under **Settings → Batch ADetailer**:
+Under **Settings → Batch ADetailer** and **Settings → Batch Hires-Fix** (each
+tab has its own section):
 
-- **Output Directory** — custom save location (empty = default img2img output dir)
-- **Test-folder scan roots** — semicolon-separated directories scanned for
-  `<set>/Tests` folders by the Test Folders panel
-- **Skip Failed Images and Continue** — keep going when one image fails (default on)
-- **Repair Unresolvable LoRA Names in Prompts** — re-point a renamed/epoch LoRA
-  name at the matching file in your Lora folder (default on)
+- **Output Directory** — custom save location (empty = the default img2img /
+  txt2img output dir)
+- **Test-folder scan roots** — semicolon-separated directories searched (3
+  levels deep) for `Tests` folders by that tab's Test Folders panel, e.g.
+  `C:\art\Commissions;C:\art\Requests`. The same roots are used to find
+  drag-dropped images back on disk, so *save into each image's own folder* only
+  works for images living under one of them
+- **Skip Failed Images and Continue** — keep going when one image fails
+  (default on)
+- **Repair Unresolvable LoRA Names in Prompts** (ADetailer section) — the LoRA
+  repair described above; one switch covers both tabs (default on)
 
 ## License
 
